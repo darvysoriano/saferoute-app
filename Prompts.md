@@ -33,3 +33,53 @@ Prompt: Crea el archivo /docs/ai/prompts-history.md y registra los prompts utili
 
 Contexto: Necesito un archivo donde Cloud Code registre automáticamente los resultados de cada generación de documentación.
 Prompt: Crea el archivo /docs/ai/generation-logs.md y agrega una sección para registrar logs de cada ejecución, incluyendo: fecha, archivo generado, tiempo de ejecución y observaciones.
+
+
+## Prompt 7
+
+Contexto: Valide la documentación necesaria para este proyecto ocupando la IA para aprovechar el conocimiento y resolviendo algunas dudas de lo que debemos siendo Arquitectos de SW, para lo cual se preparo el siguiente Prompt.
+
+Prompt:
+Actúa como un Arquitecto de Software Principal y Technical Lead especializado en sistemas distribuidos, IoT y aplicaciones móviles. Tu tarea es generar la documentación técnica exhaustiva para el proyecto "SafeRoute", siguiendo las mejores prácticas de la industria (IEEE 829, IEEE 29148, arquitectura limpia y Clean Code).
+
+### RESTRICCIONES CRÍTICAS Y LÍMITES DEL PROYECTO:
+1. Plataforma Móvil: EXCLUSIVAMENTE Android (arquitectura compatible con Flutter o React Native). Queda terminantemente FUERA DE ALCANCE el desarrollo o soporte para iOS.
+2. Presupuesto e Infraestructura: Se debe diseñar y documentar utilizando ÚNICAMENTE herramientas, librerías, servicios y niveles gratuitos (Free Tier / Open Source bajo licencias permisivas tipo MIT/Apache 2.0). No utilizar servicios que requieran tarjeta de crédito con riesgo de facturación imprevista (por ejemplo, priorizar OpenStreetMap / MapLibre / Leaflet frente a Google Maps SDK comercial, Firebase Free Spark Plan, MongoDB Atlas Free M0, y hosting gratuito como Render, Fly.io o similar).
+3. Monitoreo en segundo plano: Abordar a fondo las restricciones de Android para servicios en segundo plano (Doze Mode, Foreground Service con notificación permanente y permisos ACCESS_BACKGROUND_LOCATION).
+
+### ESTRUCTURA DE LA DOCUMENTACIÓN REQUERIDA:
+Genera un documento técnico formal, estructurado en Markdown profesional, que contenga las siguientes secciones completas y detalladas:
+
+1. ESPECIFICACIÓN DE REQUISITOS DE SOFTWARE (SRS)
+   - Tabla de Requisitos Funcionales (RF-01 a RF-XX) con ID, Nombre, Descripción, Prioridad (MoSCoW) y Criterio de Aceptación.
+   - Requisitos No Funcionales (RNF): Rendimiento de batería, seguridad de datos (menores de edad), latencia de WebSockets y tolerancia a pérdida de red móvil.
+   - Definición formal del algoritmo de cálculo de geocercas (especificar la fórmula matemática de Haversine y su implementación en código backend para calcular distancias entre coordenadas).
+
+2. ARQUITECTURA DEL SISTEMA Y DISEÑO DE INFRAESTRUCTURA GRATUITA
+   - Diagrama de componentes textual (estilo C4 Model - Nivel Contenedores) que ilustre la relación entre: App Padre (Android), App Hijo (Android), Backend API (Node.js/Express), Servidor WebSocket, Base de Datos (MongoDB Atlas Free M0) y Servicio de Notificaciones (Firebase Cloud Messaging - Plan Gratuito).
+   - Manejo de persistencia y tareas en background en Android (explicación técnica de la implementación de Foreground Service y WorkManager para el tracking cada 20 min sin que el sistema operativo elimine el proceso).
+
+3. ESPECIFICACIÓN DE INTERFACES Y CONTRATOS (APIs & WEBSOCKETS)
+   - Contratos RESTful en formato OpenAPI/JSON con ejemplos completos de Request y Response para:
+     * POST /api/v1/auth/register y login (padre e hijo).
+     * POST /api/v1/destinations (creación de geovalla con radio).
+     * GET /api/v1/locations/history/:childId (historial de rutas).
+   - Protocolo de WebSockets:
+     * Especificación de eventos entrantes y salientes (ej. `location:ping`, `geofence:status`, `alert:movement_detected`).
+     * Estructura exacta de los JSON payloads.
+
+4. MODELO DE DATOS DETALLADO (MONGODB / MONGOOSE SCHEMAS)
+   - Código completo de esquemas en Mongoose para:
+     * User (roles: TUTOR, CHILD).
+     * Destination (con índice geoespacial `2dsphere`).
+     * LocationLog (historial con TTL index para purgar datos automáticamente y no sobrepasar el límite de 512 MB del tier gratuito de MongoDB Atlas).
+     * Alert (registro de eventos de llegada y de movimiento indebido).
+
+5. CASOS DE PRUEBA CRÍTICOS Y PLAN DE ASEGURAMIENTO (QA)
+   - Matriz de Casos de Prueba (ID, Precondición, Pasos, Resultado Esperado) cubriendo:
+     * Precisión GPS fluctuante o baja precisión (evitar falsos positivos de movimiento).
+     * Pérdida y recuperación de señal celular en el trayecto.
+     * Activación y desactivación del ciclo de 20 minutos.
+
+
+    Valida los doucmentos ya documentados que son el PRD-SafeRoute.md y SDD-SafeRoute.md que todo la documentación este relacionada con lo ya documentado y validado.

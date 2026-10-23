@@ -4,9 +4,9 @@
 |---|---|
 | Producto | SafeRoute (aplicación móvil) |
 | Documento | Product Requirements Document |
-| Versión | 0.2 |
+| Versión | 0.3 |
 | Estado | Borrador para revisión |
-| Fecha | 2026-10-20 |
+| Fecha | 2026-10-22 |
 | Responsable | Darvy |
 
 ### Historial de cambios
@@ -15,6 +15,7 @@
 |---|---|---|
 | 0.1 | 2026-10-20 | Versión inicial. |
 | 0.2 | 2026-10-20 | Restricción de arquitectura: Java y componentes gratuitos sin costo de licencia. El MVP se limita a Android (iOS pasa a fuera de alcance); se retira el inicio de sesión con Apple; se agregan RF-044 (verificación periódica), los requerimientos de licenciamiento y ejecución local (§8.8) y los riesgos R-13 a R-15. |
+| 0.3 | 2026-10-22 | Alineación con la ETS: F-13 y RF-045 (estado en tiempo real en la app del tutor), RF-046 (historial de ubicaciones puntuales), RNF-PER-06 (latencia WebSocket), RNF-FIA-07 (tolerancia a pérdida de red) y CA-13. |
 
 ---
 
@@ -100,7 +101,8 @@ SafeRoute da a padres y tutores la certeza de que sus hijos llegaron a donde deb
 - Alerta de no llegada a la hora esperada.
 - Alertas de estado del dispositivo del menor (permisos de ubicación revocados, sin conexión, batería baja).
 - Consulta de ubicación actual bajo demanda.
-- Historial de eventos.
+- Historial de eventos y de ubicaciones puntuales asociadas a eventos y consultas (sin trayectos).
+- Estado en tiempo real en la app del tutor mientras está abierta.
 - Configuración de preferencias de notificación.
 - Gestión de consentimiento y eliminación de cuenta y datos.
 
@@ -243,6 +245,13 @@ El sistema alerta a los tutores cuando:
 - Pantalla de transparencia en la app del menor.
 - Exportación de los datos del grupo familiar a solicitud del tutor principal.
 - Eliminación de cuenta, perfiles de menores y datos de ubicación.
+
+### F-13 Estado en tiempo real — P1
+
+- Con la app del tutor abierta, el estado de cada menor (en destino, fuera, sin conexión) y las alertas se actualizan en pantalla sin recargar.
+- Al volver a abrir la app o recuperar la conexión, se muestran los eventos ocurridos mientras tanto.
+- Es un complemento: las notificaciones push y la bandeja siguen siendo la vía garantizada de aviso.
+- El dispositivo del menor no mantiene ninguna conexión permanente.
 
 ---
 
@@ -500,6 +509,8 @@ El sistema alerta a los tutores cuando:
 | RF-042 | El sistema debe alertar si la batería del dispositivo baja del 15 % dentro de una ventana activa, como máximo una vez por ventana. | P1 | F-08 |
 | RF-043 | La app del tutor debe mostrar el estado de cada dispositivo vinculado: permisos, última conexión y nivel de batería. | P0 | F-08 |
 | RF-044 | Durante una ventana de vigilancia activa, el sistema debe verificar cada 20 minutos la posición del menor respecto del destino, para detectar llegadas, salidas y regresos que la geocerca no haya reportado, y dispositivos sin respuesta. | P0 | F-05, F-06, F-08 |
+| RF-045 | Con la app del tutor abierta, los cambios de estado de las sesiones y las alertas deben mostrarse en tiempo real, y los eventos perdidos durante una desconexión deben recuperarse al reconectar. | P1 | F-13 |
+| RF-046 | El tutor debe poder consultar las ubicaciones puntuales asociadas a eventos y a consultas bajo demanda de los últimos 30 días; las lecturas de verificación periódica no se muestran y no se reconstruyen trayectos. | P1 | F-09, F-10 |
 
 ### 7.6 Ubicación, historial y preferencias
 
@@ -533,6 +544,7 @@ El sistema alerta a los tutores cuando:
 | RNF-PER-03 | Consumo adicional de batería en el dispositivo del menor: ≤ 5 % diario en un día escolar típico (2 destinos, 2 ventanas de vigilancia). |
 | RNF-PER-04 | Arranque en frío de la app: ≤ 2,5 s en dispositivos de gama media. |
 | RNF-PER-05 | Consumo de datos móviles del dispositivo del menor: ≤ 10 MB mensuales en uso típico. |
+| RNF-PER-06 | Latencia del canal en tiempo real desde el registro de un evento hasta su entrega a un tutor conectado: p95 ≤ 2 s y p99 ≤ 5 s. |
 
 ### 8.2 Fiabilidad y disponibilidad
 
@@ -544,6 +556,7 @@ El sistema alerta a los tutores cuando:
 | RNF-FIA-04 | Ningún evento aceptado por el backend debe perderse; el procesamiento debe ser "al menos una vez" con deduplicación. |
 | RNF-FIA-05 | Sesiones sin fallos (crash-free): ≥ 99,5 % en Android. |
 | RNF-FIA-06 | RPO ≤ 1 h y RTO ≤ 4 h ante desastre. |
+| RNF-FIA-07 | La pérdida de red móvil no debe provocar pérdida de eventos, duplicados ni falsas alertas de salida: los eventos se encolan en el dispositivo hasta 7 días con su hora real, y la ausencia de respuesta se trata como "sin conexión", nunca como salida. |
 
 ### 8.3 Seguridad
 
@@ -684,6 +697,12 @@ Los criterios usan el formato *Dado / Cuando / Entonces*.
 
 - **Dado** un equipo con Docker Engine o Podman, JDK y Android Studio, **cuando** se sigue la guía de ejecución local, **entonces** el sistema completo arranca con un solo comando y la app del emulador se conecta al backend local.
 - **Dado** el ambiente local, **cuando** se ejecuta el escenario de llegada con ubicación simulada, **entonces** el tutor de prueba recibe el aviso de llegada.
+
+### CA-13 Estado en tiempo real e historial de ubicaciones (RF-045, RF-046)
+
+- **Dado** un tutor con la app abierta, **cuando** se registra una llegada de su menor, **entonces** la pantalla de inicio la muestra en ≤ 2 s (p95) sin recargar.
+- **Dado** un tutor que perdió la conexión durante 2 minutos, **cuando** la recupera, **entonces** ve los eventos ocurridos en ese lapso sin duplicados.
+- **Dado** un menor con llegadas, salidas y ciclos de verificación en la última semana, **cuando** el tutor consulta su historial de ubicaciones, **entonces** solo aparecen los puntos de eventos y de consultas, y ninguno con más de 30 días.
 
 ---
 

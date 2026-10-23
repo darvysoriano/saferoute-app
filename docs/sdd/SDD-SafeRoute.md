@@ -4,11 +4,12 @@
 |---|---|
 | Producto | SafeRoute (aplicación móvil) |
 | Documento | Software Design Document |
-| Versión | 0.2 |
+| Versión | 0.3 |
 | Estado | Borrador para revisión |
-| Fecha | 2026-10-20 |
+| Fecha | 2026-10-22 |
 | Responsable | Darvy |
-| Documento de origen | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.2 |
+| Documento de origen | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.3 |
+| Documento relacionado | [ETS-SafeRoute.md](ETS-SafeRoute.md): requisitos detallados, contratos OpenAPI, protocolo WebSocket, DDL y plan de QA |
 
 ### Historial de cambios
 
@@ -16,6 +17,7 @@
 |---|---|---|
 | 0.1 | 2026-10-20 | Versión inicial: React Native, .NET, Azure SQL, Azure Service Bus, Google Maps. |
 | 0.2 | 2026-10-20 | Rediseño con **Java** y **componentes gratuitos sin costo de licencia**: Android nativo en Java, Spring Boot, PostgreSQL, cola de tareas sobre PostgreSQL, FCM, OpenStreetMap con teselas y geocodificador autoalojados. Se agregan el análisis de licenciamiento (§14) y la guía de ejecución local (§15). iOS sale del alcance del MVP. |
+| 0.3 | 2026-10-22 | Alineación con la ETS: canal WebSocket para la app del tutor (§4.13, ADR-017), uso breve de Foreground Service vía WorkManager (ADR-018), historial de ubicaciones puntuales (`GET /locations/history/{childId}`), tarea `partition-maintenance`, `child_id` en `location_sample`, nuevos códigos de error, UUID v7 generados en la aplicación y cifrado en reposo autoalojado. |
 
 ---
 
@@ -50,7 +52,7 @@ Este documento describe el diseño técnico de SafeRoute: arquitectura, componen
 
 ### 1.2 Alcance
 
-Cubre el MVP del PRD v0.2: la app Android (modos Tutor y Menor), el backend (API y Worker), la base de datos, las notificaciones push, los mapas y la búsqueda de direcciones.
+Cubre el MVP del PRD v0.3: la app Android (modos Tutor y Menor, con canal en tiempo real para el tutor), el backend (API y Worker), la base de datos, las notificaciones push, los mapas y la búsqueda de direcciones.
 
 ### 1.3 Restricciones de diseño
 
@@ -105,6 +107,7 @@ flowchart LR
     FCM["Firebase Cloud Messaging<br/>(gratuito)"]
 
     TA -- "HTTPS REST" --> RP
+    TA -- "WSS (tiempo real,<br/>app abierta)" --> RP
     MA -- "HTTPS REST" --> RP
     TA -- "teselas, estilo" --> RP
     RP --> API
@@ -123,7 +126,7 @@ flowchart LR
 | Componente | Tecnología | Licencia | Responsabilidad |
 |---|---|---|---|
 | App móvil | Android nativo en Java, Android Views + Material Components | Código propio; dependencias Apache 2.0 / BSD | Modo Tutor y modo Menor en un solo APK. |
-| API | Java 25 + Spring Boot 4 | Apache 2.0 | Operaciones de tutores y recepción de eventos de dispositivos. |
+| API | Java 25 + Spring Boot 4 | Apache 2.0 | Operaciones de tutores, recepción de eventos de dispositivos y servidor WebSocket `/ws/v1` para la app del tutor (§4.13). |
 | Worker | Java 25 + Spring Boot 4 + db-scheduler | Apache 2.0 | Máquina de estados de las sesiones, temporizadores, verificación cada 20 minutos y despacho de notificaciones. |
 | Base de datos | PostgreSQL 18 | PostgreSQL License | Datos transaccionales y cola persistente de tareas. |
 | Notificaciones | Firebase Cloud Messaging | Servicio gratuito | Push a tutores y push silencioso al dispositivo del menor. |
@@ -139,7 +142,7 @@ flowchart LR
 | Backend | Monolito modular en Clean Architecture (hexagonal) con dos puntos de entrada, API y Worker, que comparten `domain`, `application` e `infrastructure`. |
 | Comunicación móvil → backend | REST sobre HTTPS, JSON, versionado por ruta (`/api/v1`). |
 | Comunicación interna | Asíncrona mediante **tareas persistidas en PostgreSQL** (db-scheduler). La tarea se crea en la misma transacción que el cambio de estado que la origina, de modo que no se pierde. Sin broker de mensajería en el MVP (ADR-005). |
-| Comunicación backend → móvil | Mensajes de datos FCM: el contenido visible se construye en el dispositivo (RNF-PRI-07). |
+| Comunicación backend → móvil | Mensajes de datos FCM: el contenido visible se construye en el dispositivo (RNF-PRI-07). Además, con la app del tutor abierta, WebSocket para el estado en vivo (§4.13); la app del menor nunca abre WebSocket. |
 | Detección de geocercas | En el dispositivo, con `GeofencingClient` de Google Play Services. El backend **valida**, no detecta. |
 | Fuente de verdad | El backend. La app consulta el historial y la bandeja del servidor; el push es un aviso. |
 
@@ -168,6 +171,7 @@ flowchart TB
     subgraph Api["saferoute-api"]
         CTRL["Controllers<br/>Auth, Me, FamilyGroups, Children,<br/>Destinations, Events, LocationRequests,<br/>Device, Geocoding, Privacy"]
         ADV["GlobalExceptionHandler<br/>@RestControllerAdvice → ProblemDetail"]
+        WS["RealtimeWebSocketHandler /ws/v1<br/>+ PgNotificationListener (LISTEN)"]
         SEC["Spring Security<br/>JWT, políticas de autorización"]
         RL["Bucket4j<br/>límite de peticiones"]
     end
@@ -199,6 +203,7 @@ flowchart TB
     end
 
     CTRL --> UC
+    WS --> UC
     TASKS --> UC
     REC --> UC
     UC --> ENT
@@ -451,6 +456,7 @@ db-scheduler persiste las tareas en la tabla `scheduled_tasks` de PostgreSQL. El
 | `dispatch-notification` | Única, inmediata | `{notificationId}` | Servicios de dominio | Envío a FCM (§10). |
 | `session-materializer` | Recurrente, cada hora | — | — | §4.6 |
 | `retention-purge` | Recurrente, diaria 03:00 UTC | — | — | §4.12 |
+| `partition-maintenance` | Recurrente, diaria | — | — | Crea las particiones mensuales de `location_sample` y `device_event` de los dos meses siguientes. |
 | `push-token-cleanup` | Recurrente, diaria | — | — | Invalida tokens sin renovar en 60 días. |
 
 Reglas:
@@ -498,8 +504,8 @@ Prefijos de dominio, además de los transversales `VAL`, `INF`, `INT` y `UNX`:
 
 | Prefijo | Dominio | Ejemplos |
 |---|---|---|
-| `AUT` | Autenticación | `AUT-001` credenciales inválidas, `AUT-002` correo no verificado, `AUT-003` token de refresco reutilizado |
-| `FAM` | Grupo familiar | `FAM-001` grupo no encontrado, `FAM-002` invitación expirada, `FAM-003` operación reservada al tutor principal |
+| `AUT` | Autenticación | `AUT-001` credenciales inválidas, `AUT-002` correo no verificado, `AUT-003` token de refresco reutilizado, `AUT-004` correo ya registrado, `AUT-005` demasiados intentos |
+| `FAM` | Grupo familiar | `FAM-001` grupo no encontrado, `FAM-002` invitación expirada, `FAM-003` operación reservada al tutor principal, `FAM-004` el tutor no pertenece al grupo del recurso |
 | `CHD` | Menores | `CHD-001` menor no encontrado |
 | `DEV` | Dispositivos y vinculación | `DEV-001` código inválido o expirado, `DEV-002` dispositivo no vinculado, `DEV-003` demasiados intentos, `DEV-004` dispositivo sin Google Play Services |
 | `DST` | Destinos | `DST-001` destino no encontrado, `DST-002` límite de destinos activos, `DST-003` hora esperada fuera de la ventana |
@@ -532,6 +538,8 @@ La unicidad de los códigos se verifica con una prueba (`ErrorsTest`).
 | `saferoute.device.reporting_gap` | Dispositivos silenciosos |
 | `saferoute.task.lag` (hora programada → inicio de ejecución) por tarea | RNF-ESC-02 |
 | `saferoute.task.failed` | Alerta operativa |
+| `saferoute.realtime.delivery_latency` (commit del evento → envío por WebSocket) | RNF-PER-06 |
+| `saferoute.realtime.connections` | Capacidad del canal en tiempo real |
 
 - Salud: `/actuator/health/liveness` y `/actuator/health/readiness` (base de datos; Photon como indicador degradable que no bloquea el arranque).
 - `/api/v1/version` con versión, commit y ambiente del artefacto.
@@ -540,11 +548,27 @@ La unicidad de los códigos se verifica con una prueba (`ErrorsTest`).
 
 `retention-purge` corre cada noche:
 
-- Elimina `location_sample` y `device_event` con más de 30 días (RNF-PRI-03), por partición mensual cuando el volumen lo justifique (§6.4).
+- Elimina `location_sample` y `device_event` con más de 30 días (RNF-PRI-03) con `DROP` de las particiones mensuales vencidas y borrado por lotes del resto (§6.4, ETS §4.5).
 - Anula las coordenadas de `safety_event` con más de 30 días.
 - Borra en lotes de 5 000 filas para no bloquear tablas.
 
 El ejercicio del derecho de cancelación (RF-063, CU-09) elimina físicamente el agregado completo del grupo familiar, como excepción explícita al borrado lógico (ADR-010).
+
+### 4.13 Canal en tiempo real (WebSocket)
+
+Con la app del tutor en primer plano, el estado de las sesiones y las alertas llegan por WebSocket sin recargar (RF-045). El protocolo completo (eventos, payloads, códigos de cierre) está en la [ETS §3.5](ETS-SafeRoute.md#35-protocolo-websocket).
+
+| Aspecto | Decisión |
+|---|---|
+| Usuarios | Solo la app del tutor, solo en primer plano. La app del menor no abre WebSocket (batería, ADR-017). |
+| Implementación | `TextWebSocketHandler` de Spring WebSocket en `saferoute-api`, ruta `/ws/v1`, subprotocolo `saferoute.v1`, sin STOMP. |
+| Autenticación | JWT del tutor en el encabezado `Authorization` del handshake; renovación con el mensaje `auth:refresh`. |
+| Autorización | Cada `child:subscribe` comprueba la pertenencia al grupo; la revocación cierra la conexión con `4403`. |
+| Distribución entre instancias | El Worker ejecuta `NOTIFY saferoute_realtime` en la misma transacción que el evento; cada instancia del API escucha con `LISTEN` en una conexión dedicada y envía a sus sesiones suscritas. Sin broker. |
+| Recuperación | Reconexión con espera exponencial y `sync:request` desde el último cursor (identificador UUID v7 del último `safety_event`). |
+| Garantía | Canal de conveniencia: el push y la bandeja siguen siendo la vía garantizada. |
+| Privacidad | Las lecturas de la verificación cada 20 min no se emiten como `location:ping`; solo las consultas del tutor y las ubicaciones de eventos. |
+| Latencia | p95 ≤ 2 s desde el commit del evento (RNF-PER-06). |
 
 ---
 
@@ -562,7 +586,7 @@ El ejercicio del derecho de cancelación (RF-063, CU-09) elimina físicamente el
 | Arquitectura de presentación | MVVM: `Fragment` + `ViewModel` + `LiveData` |
 | Navegación | Navigation Component con un *nav graph* por modo |
 | Inyección de dependencias | Hilt |
-| Red | Retrofit + OkHttp + Moshi |
+| Red | Retrofit + OkHttp + Moshi; WebSocket de OkHttp para el canal en tiempo real del modo Tutor |
 | Persistencia local | Room (cola offline de eventos, caché de menores y destinos) |
 | Trabajo en segundo plano | WorkManager |
 | Ubicación | Google Play Services Location: `GeofencingClient`, `FusedLocationProviderClient` |
@@ -642,11 +666,11 @@ flowchart TD
 
 | Pantalla | Contenido | Requerimientos |
 |---|---|---|
-| Inicio | Tarjeta por menor: estado (en destino, en camino, fuera, sin conexión), próximo destino, estado del dispositivo | RF-043 |
+| Inicio | Tarjeta por menor: estado (en destino, en camino, fuera, sin conexión), próximo destino, estado del dispositivo; se actualiza en vivo por WebSocket | RF-043, RF-045 |
 | Detalle de menor | Destinos, eventos recientes, botón "Ver ubicación actual" | RF-050 |
 | Lista de destinos | Estado: activo, pausado, pendiente de sincronizar | RF-025, RF-027 |
 | Editor de destino | Mapa MapLibre, búsqueda de dirección (Photon vía API), control del radio con vista previa del círculo, menores, horario, tolerancia | RF-020 – RF-024 |
-| Historial | Lista con filtros; detalle con mapa mientras la ubicación siga disponible | RF-052 |
+| Historial | Lista con filtros; detalle con mapa mientras la ubicación siga disponible; vista de ubicaciones puntuales de los últimos 30 días | RF-052, RF-046 |
 | Grupo familiar | Tutores, invitaciones, menores, generación del QR de vinculación | RF-010 – RF-019 |
 | Ajustes | Preferencias de notificación, alertas prioritarias, privacidad, exportación, licencias de código abierto, eliminar cuenta | RF-053, RF-054, RF-060 – RF-063, RNF-LIC-04 |
 
@@ -679,7 +703,7 @@ Con 10 destinos por menor son 20 geocercas, dentro del límite de 100 por app. `
 
 **Permisos.** En Android 10 se solicita `ACCESS_BACKGROUND_LOCATION` tras `ACCESS_FINE_LOCATION`; en Android 11+ el usuario debe elegir "Permitir todo el tiempo" en la configuración del sistema, y el asistente lo lleva a esa pantalla con una explicación previa. También se verifican `POST_NOTIFICATIONS` (Android 13+), ubicación precisa y la exclusión de optimización de batería, con una guía específica por fabricante (`OemBatteryGuide`). Cualquier cambio se reporta con `PERMISSION_CHANGED` (RF-040).
 
-**Solicitudes de ubicación.** Un mensaje FCM de datos de prioridad alta `LOCATION_REQUEST` llega a `SafeRouteMessagingService.onMessageReceived`, que encola `LocationRequestWorker` *expedited*. El worker llama a `getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, token)` con 25 s de tiempo máximo y envía el resultado a `POST /api/v1/device/locations`. Con el permiso de ubicación en segundo plano concedido, la lectura se permite sin servicio en primer plano; 3 lecturas por hora están dentro de los límites de ubicación en segundo plano de Android.
+**Solicitudes de ubicación.** Un mensaje FCM de datos de prioridad alta `LOCATION_REQUEST` llega a `SafeRouteMessagingService.onMessageReceived`, que encola `LocationRequestWorker` *expedited*. El worker llama a `getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, token)` con 25 s de tiempo máximo y envía el resultado a `POST /api/v1/device/locations`. 3 lecturas por hora están dentro de los límites de ubicación en segundo plano de Android. Cuando el sistema ejecuta el trabajo como Foreground Service (Android < 12 o sin cuota de trabajos *expedited*), lo hace con `getForegroundInfo()` de tipo `location` y una notificación silenciosa que dura solo la lectura; nunca hay un servicio en primer plano permanente (ADR-018, [ETS §2.4](ETS-SafeRoute.md#24-persistencia-y-tareas-en-segundo-plano-en-android)).
 
 **Ubicación simulada.** `Location.isMock()` se envía en cada lectura (RT-04).
 
@@ -875,7 +899,7 @@ Restricción `uq_watch_session_schedule_child_date` sobre `(destination_schedule
 | `payload` | `jsonb` | Sí | Datos específicos del tipo |
 | `processing_status` | `varchar(50)` | No | `pending`, `processed`, `ignored` |
 
-**`location_sample`** (retención 30 días) — `location_sample_id`, `device_id` (FK), `location_request_id` (FK, nulo), `source` (`on_demand`, `verification`, `event`, `heartbeat`), `captured_at`, `latitude`, `longitude`, `accuracy_meters`, `is_mock`. Índice `ix_location_sample_device_id_captured_at`.
+**`location_sample`** (retención 30 días, particionada por mes) — `location_sample_id`, `device_id` (FK), `child_id` (FK, para el historial aunque cambie el dispositivo), `location_request_id` (nulo), `source` (`on_demand`, `verification`, `event`, `heartbeat`), `captured_at`, `latitude`, `longitude`, `accuracy_meters`, `is_mock`. Clave primaria `(location_sample_id, captured_at)` por el particionado. Índices `ix_location_sample_child_id_captured_at` e `ix_location_sample_device_id_captured_at`. DDL completo en la [ETS §4.2](ETS-SafeRoute.md#42-ddl-flyway).
 
 **`location_request`** — `location_request_id`, `child_id` (FK), `requested_by_guardian_id` (FK, nulo si lo pide el sistema), `reason` (`on_demand`, `verification`, `arrival_deadline`, `arrival_confirmation`), `watch_session_id` (FK, nulo), `status` (`pending`, `fulfilled`, `timed_out`), `responded_at`.
 
@@ -890,10 +914,12 @@ Restricción `uq_watch_session_schedule_child_date` sobre `(destination_schedule
 | `event_type_id` | `uuid` | No | FK → `cat_event_type` |
 | `watch_session_id` | `uuid` | Sí | FK |
 | `destination_id` | `uuid` | Sí | FK |
+| `location_sample_id` | `uuid` | Sí | Muestra asociada, sin FK (la muestra se purga a los 30 días) |
 | `occurred_at` | `timestamptz` | No | Hora real del hecho |
 | `latitude`, `longitude` | `numeric(9,6)` | Sí | Se anulan a los 30 días |
 | `accuracy_meters` | `numeric(7,1)` | Sí | |
 | `is_location_unverified` | `boolean` | No | Ubicación simulada detectada |
+| `detected_by` | `varchar(50)` | Sí | `geofence_dwell`, `geofence_exit`, `verification`, `arrival_deadline`, `device_report`, `on_demand` |
 | `actor_guardian_id` | `uuid` | Sí | Tutor que consultó la ubicación |
 | `dedup_key` | `varchar(500)` | No | Único; p. ej. `ARRIVAL:{watch_session_id}` |
 
@@ -1059,7 +1085,8 @@ Respuesta `201 Created` con el destino, `configVersion` y `syncStatus` por menor
 | `GET` | `/children/{childId}/events` | Historial; filtros `type`, `destinationId`, `from`, `to` | RF-052 |
 | `GET` | `/children/{childId}/watch-sessions?date=` | Sesiones del día | |
 | `POST` | `/children/{childId}/location-requests` | Solicita ubicación; `202` con `locationRequestId` | RF-050, RF-051 |
-| `GET` | `/location-requests/{locationRequestId}` | Estado y resultado; la app consulta cada 2 s hasta 30 s | RF-050 |
+| `GET` | `/location-requests/{locationRequestId}` | Estado y resultado; con WebSocket conectado llega como `location:ping`, sin consultar | RF-050 |
+| `GET` | `/locations/history/{childId}` | Ubicaciones puntuales de eventos y consultas de los últimos 30 días; nunca lecturas de verificación ni trayectos | RF-046 |
 
 ```json
 {
@@ -1129,7 +1156,15 @@ Los duplicados se devuelven en `duplicates` para que el dispositivo los retire d
 | `POST` | `/family-groups/{familyGroupId}/exports` | Solicita exportación JSON | RF-062 |
 | `GET` | `/exports/{dataExportId}` | Estado y descarga temporal | RF-062 |
 
-### 7.10 Operación
+### 7.10 Canal WebSocket
+
+| Ruta | Descripción | RF |
+|---|---|---|
+| `GET /ws/v1` (upgrade) | Canal en tiempo real del tutor: `geofence:status`, `location:ping`, `alert:*`, `sync:events` | RF-045 |
+
+Especificación completa en la [ETS §3.5](ETS-SafeRoute.md#35-protocolo-websocket).
+
+### 7.11 Operación
 
 | Método | Ruta | Descripción |
 |---|---|---|
@@ -1446,6 +1481,7 @@ sequenceDiagram
 - **Errores permanentes:** `UNREGISTERED` invalida el token; `INVALID_ARGUMENT` se registra como `ERROR` sin reintento.
 - **Varios dispositivos por tutor:** se envía a todos los tokens activos.
 - **Bandeja:** `GET /me/notifications` es la fuente de verdad; un push perdido sigue visible al abrir la app.
+- **Tiempo real:** si el tutor tiene la app abierta, el evento llega además por WebSocket (`alert:*`); la app descarta el duplicado por `safetyEventId` y no muestra dos veces el mismo aviso.
 - **Latencia:** desde `occurredAt` (o `receivedAt` si fue diferido) hasta la aceptación de FCM, contra RNF-PER-01.
 
 ### 10.5 Gestión de tokens
@@ -1544,6 +1580,9 @@ En `development` se puede usar, con volumen mínimo y respetando sus políticas 
 | ADR-014 | **Verificación cada 20 minutos iniciada por el servidor** con FCM de prioridad alta. | Solo geocercas; ubicación periódica iniciada por el dispositivo. | Red de seguridad sin rastreo continuo; la cadencia no depende del mínimo de 15 min ni de los aplazamientos de WorkManager. |
 | ADR-015 | **Versionado de API por ruta** (`/api/v1`) con versión mínima de app. | Encabezado; sin versionado. | Las versiones instaladas de la app conviven; política pendiente en los estándares de Ryndem. |
 | ADR-016 | **Eclipse Temurin** como distribución del JDK en desarrollo, build e imágenes. | Oracle JDK. | Oracle JDK cambia a licencia comercial cuando su versión deja de ser la última LTS; Temurin es OpenJDK sin costo. |
+| ADR-017 | **WebSocket solo para la app del tutor**, en `saferoute-api`, con distribución entre instancias por `LISTEN/NOTIFY` de PostgreSQL. | WebSocket también en la app del menor; servidor WebSocket aparte; STOMP sobre RabbitMQ; Server-Sent Events. | Estado en vivo para el tutor sin costo de batería en el menor: una conexión persistente en el dispositivo del menor rompería RNF-PER-03. `LISTEN/NOTIFY` evita introducir un broker. Sin STOMP para mantener el protocolo simple y explícito. |
+| ADR-018 | **Foreground Service solo durante cada lectura**, mediante trabajos *expedited* de WorkManager con `ForegroundInfo` de tipo `location`. | Foreground Service de ubicación permanente para el ciclo de 20 min. | Un servicio permanente muestra una notificación fija al menor, consume batería, contradice RNF-PRI-04 y complica la aprobación en Google Play. El ciclo lo marca el servidor por FCM (ADR-014), así que no hace falta mantener vivo el proceso. |
+| ADR-019 | **Identificadores UUID v7 generados en la aplicación** (`java-uuid-generator`), con `uuidv7()` como respaldo en la base. | Generación solo en la base; UUID v4. | El dominio conoce el identificador antes de persistir; UUID v7 es ordenable en el tiempo (índices compactos y cursores de sincronización del WebSocket). |
 
 ---
 
@@ -1556,7 +1595,8 @@ Versiones exactas: se fijan al crear los proyectos (última estable con soporte)
 | Dependencia | Uso | Licencia |
 |---|---|---|
 | Eclipse Temurin 25 (JDK/JRE) | Plataforma | GPLv2 + Classpath Exception |
-| Spring Boot 4 (Web MVC, Validation, Data JPA, Security, OAuth2 Resource Server, Actuator, Mail) | Framework | Apache 2.0 |
+| Spring Boot 4 (Web MVC, WebSocket, Validation, Data JPA, Security, OAuth2 Resource Server, Actuator, Mail) | Framework | Apache 2.0 |
+| java-uuid-generator | UUID v7 | Apache 2.0 |
 | Hibernate ORM 7, Hibernate Validator | JPA y validación | Apache 2.0 |
 | PostgreSQL JDBC | Controlador | BSD-2-Clause |
 | HikariCP | Pool de conexiones | Apache 2.0 |
@@ -1880,7 +1920,8 @@ Reglas:
 
 - Ningún secreto en el repositorio: en local, archivos en `deploy/local/secrets/` excluidos por `.gitignore` y plantillas `.example`; en servidores, OpenBao.
 - Validación de toda entrada en el borde (Bean Validation) y autorización por operación en el servidor (§4.8).
-- *Certificate pinning* en las variantes de QA, UAT y producción (RNF-SEG-01), con pin actual y de respaldo; desactivado en `localDebug`.
+- *Certificate pinning* en las variantes de QA, UAT y producción (RNF-SEG-01), con pin actual y de respaldo, también para el WebSocket (`wss://`); desactivado en `localDebug`.
+- Cifrado en reposo (RNF-SEG-02) sin servicios de pago: volumen de datos de PostgreSQL con LUKS2 (AES-256-XTS) y respaldos de pgBackRest cifrados con `aes-256-cbc`.
 - OWASP Dependency-Check en el pipeline; una vulnerabilidad conocida bloquea.
 - Revisión OWASP MASVS L1 antes del lanzamiento (RNF-SEG-09).
 
@@ -1909,6 +1950,10 @@ Reglas:
 | F-11 Preferencias | §10.2, §10.4 |
 | F-12 Privacidad | §4.12, §7.9, ADR-010 |
 | RF-044 Verificación periódica | §9 |
+| RF-045 Estado en tiempo real | §4.13, §7.10, ETS §3.5 |
+| RF-046 Historial de ubicaciones puntuales | §7.7, ETS §3.4 |
+| RNF-PER-06 Latencia WebSocket | §4.11, §4.13 |
+| RNF-FIA-07 Tolerancia a pérdida de red | §5.5, §8.4, ETS §1.3.4 |
 | RNF-PER-01 | §4.11, §10.4 |
 | RNF-PER-03 | §5.5, §9.5 |
 | RNF-FIA-04 | §4.7 |
