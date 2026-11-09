@@ -4,9 +4,9 @@
 |---|---|
 | Producto | SafeRoute (aplicación móvil) |
 | Documento | Product Requirements Document |
-| Versión | 0.3 |
+| Versión | 0.4 |
 | Estado | Borrador para revisión |
-| Fecha | 2026-10-22 |
+| Fecha | 2026-11-09 |
 | Responsable | Darvy |
 
 ### Historial de cambios
@@ -16,6 +16,7 @@
 | 0.1 | 2026-10-20 | Versión inicial. |
 | 0.2 | 2026-10-20 | Restricción de arquitectura: Java y componentes gratuitos sin costo de licencia. El MVP se limita a Android (iOS pasa a fuera de alcance); se retira el inicio de sesión con Apple; se agregan RF-044 (verificación periódica), los requerimientos de licenciamiento y ejecución local (§8.8) y los riesgos R-13 a R-15. |
 | 0.3 | 2026-10-22 | Alineación con la ETS: F-13 y RF-045 (estado en tiempo real en la app del tutor), RF-046 (historial de ubicaciones puntuales), RNF-PER-06 (latencia WebSocket), RNF-FIA-07 (tolerancia a pérdida de red) y CA-13. |
+| 0.4 | 2026-11-09 | Casos de uso CU-10 a CU-19 para los requerimientos que no tenían caso de uso (hallazgo H-01 de la matriz de trazabilidad). |
 
 ---
 
@@ -440,6 +441,206 @@ El sistema alerta a los tutores cuando:
 **Flujos alternos**
 
 - 3a. Si el grupo tiene tutores secundarios, el sistema ofrece transferir el rol de tutor principal antes de eliminar.
+
+### CU-10 Gestionar un destino existente
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor |
+| Requerimientos | RF-025, RF-026, RF-027 |
+| Precondiciones | El destino existe en un grupo al que pertenece el tutor. |
+| Postcondiciones | El destino queda editado, pausado, reanudado o eliminado, y los dispositivos asignados reciben la configuración nueva. |
+
+**Flujo principal**
+
+1. El tutor abre la lista de destinos y selecciona uno.
+2. Elige editar, pausar, reanudar o eliminar.
+3. El sistema aplica el cambio, cancela las vigilancias futuras afectadas y vuelve a programarlas si el destino sigue activo.
+4. El sistema envía la configuración nueva a los dispositivos de los menores asignados.
+
+**Flujos alternos**
+
+- 2a. Al reanudar, el menor ya tiene 10 destinos activos: el sistema lo impide e informa el límite.
+- 3a. Hay una vigilancia en curso y el horario sigue vigente: se conserva la vigilancia en curso.
+- 4a. Un dispositivo está sin conexión: el destino se muestra "Pendiente de sincronizar" hasta que se reconecte.
+
+### CU-11 Revocar a un tutor secundario
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor principal |
+| Requerimientos | RF-012 |
+| Precondiciones | El grupo tiene al menos un tutor secundario. |
+| Postcondiciones | El tutor revocado pierde todo acceso al grupo. |
+
+**Flujo principal**
+
+1. El tutor principal abre el grupo familiar y elige "Quitar tutor".
+2. El sistema pide confirmación.
+3. El sistema revoca el acceso de inmediato: el revocado deja de ver los menores, destinos e historial del grupo y de recibir sus avisos.
+
+**Flujos alternos**
+
+- 3a. El revocado tiene la app abierta: la vista en tiempo real se cierra y se le informa que ya no pertenece al grupo.
+
+### CU-12 Cambiar de grupo familiar
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor que pertenece a más de un grupo |
+| Requerimientos | RF-013 |
+| Precondiciones | El tutor pertenece a dos o más grupos. |
+| Postcondiciones | La app muestra los menores, destinos e historial del grupo elegido. |
+
+**Flujo principal**
+
+1. Al abrir la app, si no hay un grupo elegido, el sistema muestra la lista de grupos del tutor.
+2. El tutor elige uno.
+3. La app muestra la información de ese grupo y recuerda la elección.
+
+**Flujos alternos**
+
+- 1a. El tutor cambia de grupo en cualquier momento desde la barra superior.
+- 3a. Los avisos de todos sus grupos le siguen llegando, sin importar cuál esté elegido.
+
+### CU-13 Supervisar el estado del dispositivo del menor
+
+| Campo | Detalle |
+|---|---|
+| Actores | Sistema; receptor: tutores del grupo |
+| Requerimientos | RF-040, RF-041, RF-042, RF-043 |
+| Precondiciones | Dispositivo del menor vinculado. |
+| Postcondiciones | Los tutores conocen el estado del dispositivo y reciben alerta ante un problema que impide la vigilancia. |
+
+**Flujo principal**
+
+1. El dispositivo del menor reporta periódicamente permisos, batería y conexión.
+2. El tutor consulta en la app el estado de cada dispositivo: permisos, última conexión y batería.
+3. Si se revoca el permiso de ubicación, el sistema alerta a los tutores.
+
+**Flujos alternos**
+
+- 3a. Durante una vigilancia, el dispositivo no reporta en más de 30 minutos: el sistema alerta "sin conexión" una sola vez; cuando vuelve a reportar, avisa la reconexión.
+- 3b. Durante una vigilancia, la batería baja del 15 %: el sistema alerta una sola vez por vigilancia.
+
+### CU-14 Verificar periódicamente la posición del menor
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Sistema |
+| Requerimientos | RF-044 |
+| Precondiciones | Vigilancia en curso para un destino. |
+| Postcondiciones | El estado de la vigilancia refleja la posición real del menor aunque la geocerca no haya reportado un cambio. |
+
+**Flujo principal**
+
+1. Cada 20 minutos de la ventana de vigilancia, el sistema solicita la ubicación al dispositivo, salvo que tenga una reciente.
+2. El dispositivo responde con su ubicación.
+3. El sistema compara la ubicación con el destino y, si detecta una llegada, salida o regreso no reportados, los registra y avisa como en CU-04 y CU-05.
+
+**Flujos alternos**
+
+- 3a. La lectura indica una salida: el sistema la confirma con una segunda lectura a los 3 minutos antes de alertar.
+- 2a. El dispositivo no responde: se reintenta y, si pasan más de 30 minutos sin contacto, se continúa como en CU-13 3a.
+
+### CU-15 Ver el estado en tiempo real
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor |
+| Requerimientos | RF-045 |
+| Precondiciones | El tutor tiene la app abierta. |
+| Postcondiciones | La pantalla muestra el estado actual sin recargar. |
+
+**Flujo principal**
+
+1. El tutor abre la pantalla de inicio.
+2. La app muestra el estado de cada menor (en destino, fuera, sin conexión) y lo actualiza al instante cuando ocurre una llegada, salida o alerta.
+
+**Flujos alternos**
+
+- 2a. La app pierde la conexión: al recuperarla, muestra los eventos ocurridos mientras tanto, sin duplicados.
+- 2b. La app pasa a segundo plano: deja de actualizar en vivo y los avisos siguen llegando por notificación.
+
+### CU-16 Consultar el historial
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor |
+| Requerimientos | RF-046, RF-051, RF-052 |
+| Precondiciones | El menor pertenece al grupo del tutor. |
+| Postcondiciones | El tutor ve los eventos y ubicaciones de los últimos 30 días. |
+
+**Flujo principal**
+
+1. El tutor abre el historial de un menor.
+2. La app muestra los eventos en orden cronológico descendente: llegadas, salidas, reingresos, no llegadas, alertas de dispositivo y consultas de ubicación con el tutor que las hizo.
+3. El tutor filtra por destino, tipo de evento o fechas.
+4. El tutor abre la vista de ubicaciones para ver en el mapa los puntos asociados a eventos y consultas.
+
+**Flujos alternos**
+
+- 3a. El rango pedido supera los 30 días: el sistema informa que solo conserva 30 días.
+- 4a. No se muestran las lecturas de la verificación periódica ni se dibujan trayectos.
+
+### CU-17 Configurar preferencias de notificación
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor |
+| Requerimientos | RF-053, RF-054 |
+| Precondiciones | Sesión iniciada. |
+| Postcondiciones | Los avisos siguientes respetan las preferencias del tutor. |
+
+**Flujo principal**
+
+1. El tutor abre Ajustes → Notificaciones.
+2. Activa o desactiva cada tipo de aviso, de forma general o por destino.
+3. Marca qué alertas son prioritarias y, si lo desea, concede a la app acceso a "No molestar".
+
+**Flujos alternos**
+
+- 2a. Un tipo desactivado no genera notificación, pero el evento sigue apareciendo en la bandeja y el historial.
+- 3a. El tutor no concede acceso a "No molestar": las alertas prioritarias llegan con prioridad alta sin atravesar ese modo.
+
+### CU-18 Aceptar una nueva versión del aviso de privacidad
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor |
+| Requerimientos | RF-061 |
+| Precondiciones | Se publicó una versión del aviso posterior a la que aceptó el tutor. |
+| Postcondiciones | Queda registrado el consentimiento de la versión vigente. |
+
+**Flujo principal**
+
+1. Al abrir la app, el sistema muestra el resumen de cambios y el enlace al aviso completo.
+2. El tutor acepta.
+3. El sistema registra el consentimiento con fecha y versión, y la app continúa.
+
+**Flujos alternos**
+
+- 2a. El tutor no acepta: no puede dar de alta menores ni destinos hasta aceptar; los avisos de los menores ya configurados se mantienen.
+
+### CU-19 Exportar los datos del grupo
+
+| Campo | Detalle |
+|---|---|
+| Actor principal | Tutor principal |
+| Requerimientos | RF-062 |
+| Precondiciones | Sesión iniciada como tutor principal. |
+| Postcondiciones | El tutor dispone de un archivo con los datos del grupo. |
+
+**Flujo principal**
+
+1. El tutor principal elige Ajustes → Privacidad → Exportar mis datos.
+2. El sistema prepara el archivo en segundo plano.
+3. Cuando está listo, el tutor lo descarga desde un enlace temporal.
+
+**Flujos alternos**
+
+- 1a. Un tutor secundario lo intenta: el sistema indica que solo el tutor principal puede exportar.
+- 3a. El enlace caducó: el tutor solicita una exportación nueva.
 
 ---
 

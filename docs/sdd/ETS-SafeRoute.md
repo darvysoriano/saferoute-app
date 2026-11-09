@@ -6,11 +6,19 @@
 |---|---|
 | Producto | SafeRoute (aplicación móvil) |
 | Documento | Especificación Técnica del Sistema: requisitos, arquitectura, contratos, modelo de datos y plan de QA |
-| Versión | 1.0 |
+| Versión | 1.1 |
 | Estado | Borrador para revisión |
-| Fecha | 2026-10-22 |
+| Fecha | 2026-11-09 |
 | Responsable | Darvy |
-| Documentos base | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.3 · [SDD-SafeRoute.md](SDD-SafeRoute.md) v0.3 |
+| Documentos base | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.4 · [SDD-SafeRoute.md](SDD-SafeRoute.md) v0.4 |
+| Documento relacionado | [TRAZABILIDAD.md](../analysis/TRAZABILIDAD.md) v1.1 |
+
+### Historial de cambios
+
+| Versión | Fecha | Cambio |
+|---|---|---|
+| 1.0 | 2026-10-22 | Versión inicial. |
+| 1.1 | 2026-11-09 | Corrección de los hallazgos de la matriz de trazabilidad: casos de prueba `QA-AUT`, `QA-FAM`, `QA-DST`, `QA-EVT`, `QA-NTF`, `QA-DEV`, `QA-HIS` y `QA-PRV` (§5.6 a §5.13; el plan de QA pasa a §5.14) (H-02); tabla `account_token` (H-03); retención de eventos a 30 días con agregado anónimo `safety_event_daily_stat` (H-06); se retira el origen `heartbeat` de `location_sample` (H-08); endpoint de reportes de fallos (§3.6, H-07); códigos `AUT-006` y `AUT-007`. |
 
 ---
 
@@ -77,7 +85,7 @@ Cambios introducidos en la documentación base por esta especificación:
 | RF-003 | Verificación de correo | El correo se verifica antes de permitir el alta de menores. | Must | Sin verificar, `POST /children` responde `403` con `AUT-002`; tras verificar, la operación se permite. |
 | RF-004 | Recuperación de contraseña | Restablecimiento mediante enlace enviado al correo. | Must | La respuesta es idéntica exista o no el correo; el enlace caduca a los 60 min y es de un solo uso. |
 | RF-005 | Política de contraseña | Mínimo 8 caracteres con letras y números. | Must | Una contraseña que no cumple responde `400` con `VAL-001` y el detalle del campo. |
-| RF-006 | Eliminación de cuenta | Eliminación tras reautenticación. | Must | Sin reautenticación en los últimos 5 min responde `401`; con ella, la cuenta queda marcada y sus datos se eliminan según RF-063. |
+| RF-006 | Eliminación de cuenta | Eliminación tras reautenticación. | Must | Sin reautenticación en los últimos 5 min responde `401` con `AUT-007`; con ella, la cuenta queda marcada y sus datos se eliminan según RF-063. |
 
 #### Grupo familiar y menores
 
@@ -187,7 +195,7 @@ La app del menor **no mantiene conexión WebSocket** ni servicio en primer plano
 | ID | Requisito | Implementación |
 |---|---|---|
 | RNF-PRI-02 | Ubicación del menor tratada como dato sensible, con consentimiento expreso del tutor. | `consent` con `scope = child_location`; sin él no se crea el menor (RF-060). |
-| RNF-PRI-03 | Ubicaciones puntuales retenidas ≤ 30 días. | Particiones mensuales y `DROP` de las vencidas; anulación de coordenadas en `safety_event` (§4.5). |
+| RNF-PRI-03 | Ubicaciones puntuales retenidas ≤ 30 días; más allá, solo eventos agregados. | Particiones mensuales y `DROP` de las vencidas; eventos, sesiones y notificaciones de más de 30 días se eliminan tras sumarse al agregado anónimo `safety_event_daily_stat` (§4.5). |
 | RNF-PRI-04 | Sin rastreo continuo. | Solo geocercas, verificación en ventana y consultas bajo demanda. Las lecturas de verificación no se muestran al tutor (RF-046). |
 | RNF-PRI-07 | El proveedor de push no recibe datos personales. | FCM solo transporta identificadores; el texto se construye en el dispositivo. |
 | RNF-SEG-01 | TLS 1.2+ y *certificate pinning*. | Caddy con TLS 1.3 preferente; OkHttp `CertificatePinner` en las variantes no locales. Aplica también al WebSocket (`wss://`). |
@@ -1798,6 +1806,20 @@ sequenceDiagram
 
 El `NOTIFY` se emite dentro de la misma transacción que el evento, así que solo se entrega si la transacción se confirma. Si una instancia pierde la conexión `LISTEN`, la reabre y los clientes recuperan lo perdido con `sync:request`.
 
+### 3.6 `POST /api/v1/crash-reports` — reportes de fallos
+
+Recibe los informes que ACRA envía desde la app (RNF-FIA-05; SDD §13.2), en lugar de usar un servicio de terceros.
+
+| Aspecto | Especificación |
+|---|---|
+| Autenticación | Opcional: si la app tiene sesión envía su JWT (tutor o dispositivo); si no, se acepta sin autenticar. |
+| Límite | 10 informes por dispositivo e IP cada hora (Bucket4j); el exceso responde `429`. |
+| Contenido | Versión de la app, versión de Android, fabricante, modelo, traza de pila y estado de la app. ACRA se configura para **no** enviar registros del sistema, datos de entrada del usuario ni identificadores del dispositivo. |
+| Tamaño máximo | 256 KB. |
+| Respuesta | `202 Accepted` sin cuerpo. |
+| Almacenamiento | Se registran en el log estructurado (Loki) con el `correlationId`; no se guardan en la base. |
+| Métrica | `saferoute.crash_reports` por versión de app, para calcular las sesiones sin fallos (RNF-FIA-05). |
+
 ---
 
 ## 4. Modelo de datos detallado
@@ -1835,6 +1857,28 @@ CREATE TABLE guardian (
     CONSTRAINT ck_guardian_email_lowercase CHECK (email = lower(email)),
     CONSTRAINT ck_guardian_phone_number_e164 CHECK (phone_number IS NULL OR phone_number ~ '^\+[1-9][0-9]{7,14}$')
 );
+
+-- Tokens de un solo uso enviados por correo (RF-003, RF-004). Solo se guarda el hash.
+CREATE TABLE account_token (
+    account_token_id  uuid         NOT NULL DEFAULT uuidv7(),
+    guardian_id       uuid         NOT NULL,
+    purpose           varchar(50)  NOT NULL,
+    token_hash        varchar(500) NOT NULL,
+    expires_at        timestamptz  NOT NULL,
+    used_at           timestamptz,
+    created_at        timestamptz  NOT NULL DEFAULT now(),
+    updated_at        timestamptz  NOT NULL DEFAULT now(),
+    is_active         boolean      NOT NULL DEFAULT true,
+    CONSTRAINT pk_account_token PRIMARY KEY (account_token_id),
+    CONSTRAINT fk_account_token_guardian_guardian_id
+        FOREIGN KEY (guardian_id) REFERENCES guardian (guardian_id) ON DELETE CASCADE,
+    CONSTRAINT uq_account_token_token_hash UNIQUE (token_hash),
+    -- Vigencia: 24 h para verificación de correo (CU-01 5a), 60 min para recuperación (RF-004).
+    CONSTRAINT ck_account_token_purpose CHECK (purpose IN ('email_verification', 'password_reset')),
+    CONSTRAINT ck_account_token_expires_after_creation CHECK (expires_at > created_at)
+);
+
+CREATE INDEX ix_account_token_guardian_id_purpose ON account_token (guardian_id, purpose) WHERE used_at IS NULL;
 
 CREATE TABLE family_group (
     family_group_id    uuid        NOT NULL DEFAULT uuidv7(),
@@ -2026,7 +2070,7 @@ CREATE TABLE location_sample (
         FOREIGN KEY (device_id) REFERENCES device (device_id) ON DELETE CASCADE,
     CONSTRAINT fk_location_sample_child_child_id
         FOREIGN KEY (child_id) REFERENCES child (child_id) ON DELETE CASCADE,
-    CONSTRAINT ck_location_sample_source CHECK (source IN ('on_demand', 'verification', 'event', 'heartbeat')),
+    CONSTRAINT ck_location_sample_source CHECK (source IN ('on_demand', 'verification', 'event')),
     CONSTRAINT ck_location_sample_latitude CHECK (latitude BETWEEN -90 AND 90),
     CONSTRAINT ck_location_sample_longitude CHECK (longitude BETWEEN -180 AND 180),
     CONSTRAINT ck_location_sample_accuracy_meters CHECK (accuracy_meters >= 0)
@@ -2071,8 +2115,8 @@ CREATE TABLE safety_event (
         FOREIGN KEY (destination_id) REFERENCES destination (destination_id) ON DELETE SET NULL,
     CONSTRAINT fk_safety_event_guardian_actor_guardian_id
         FOREIGN KEY (actor_guardian_id) REFERENCES guardian (guardian_id) ON DELETE SET NULL,
-    -- watch_session_id referencia watch_session (V4). location_sample_id no lleva clave foránea:
-    -- la muestra se elimina a los 30 días con su partición, y el evento se conserva sin coordenadas.
+    -- watch_session_id referencia watch_session (V4). location_sample_id no lleva clave foránea porque
+    -- location_sample está particionada y su clave incluye captured_at. Ambos se eliminan a los 30 días.
     CONSTRAINT uq_safety_event_dedup_key UNIQUE (dedup_key),
     CONSTRAINT ck_safety_event_detected_by CHECK (
         detected_by IS NULL OR detected_by IN ('geofence_dwell', 'geofence_exit', 'verification', 'arrival_deadline', 'device_report', 'on_demand')
@@ -2085,6 +2129,22 @@ CREATE TABLE safety_event (
 
 CREATE INDEX ix_safety_event_child_id_occurred_at ON safety_event (child_id, occurred_at DESC)
     INCLUDE (event_type_id, destination_id);
+
+-- Agregado anónimo que sobrevive a la purga de 30 días (RNF-PRI-03): sin menor, grupo ni coordenadas.
+CREATE TABLE safety_event_daily_stat (
+    safety_event_daily_stat_id  uuid        NOT NULL DEFAULT uuidv7(),
+    stat_date                   date        NOT NULL,
+    event_type_id               uuid        NOT NULL,
+    event_count                 integer     NOT NULL,
+    created_at                  timestamptz NOT NULL DEFAULT now(),
+    updated_at                  timestamptz NOT NULL DEFAULT now(),
+    is_active                   boolean     NOT NULL DEFAULT true,
+    CONSTRAINT pk_safety_event_daily_stat PRIMARY KEY (safety_event_daily_stat_id),
+    CONSTRAINT fk_safety_event_daily_stat_cat_event_type_event_type_id
+        FOREIGN KEY (event_type_id) REFERENCES cat_event_type (event_type_id),
+    CONSTRAINT uq_safety_event_daily_stat_stat_date_event_type_id UNIQUE (stat_date, event_type_id),
+    CONSTRAINT ck_safety_event_daily_stat_event_count CHECK (event_count >= 0)
+);
 
 CREATE TABLE notification (
     notification_id      uuid         NOT NULL DEFAULT uuidv7(),
@@ -2767,7 +2827,7 @@ public class LocationSampleEntity extends AuditedEntity {
   }
 
   public enum Source implements PersistableEnum {
-    ON_DEMAND("on_demand"), VERIFICATION("verification"), EVENT("event"), HEARTBEAT("heartbeat");
+    ON_DEMAND("on_demand"), VERIFICATION("verification"), EVENT("event");
     private final String dbValue;
     Source(String dbValue) { this.dbValue = dbValue; }
     @Override public String dbValue() { return dbValue; }
@@ -3007,8 +3067,11 @@ No se incluye en el MVP (KISS).
 | Índice TTL (`expireAfterSeconds`) que borra documento a documento cada 60 s | Tarea `retention-purge` (diaria, 03:00 UTC) que hace `DETACH PARTITION ... CONCURRENTLY` y `DROP TABLE` de las particiones mensuales completamente vencidas |
 | — | Tarea `partition-maintenance` (diaria) que crea las particiones de los dos meses siguientes |
 | — | Para los días de la partición en curso que superan los 30 días, `DELETE` por lotes de 5 000 filas con `captured_at < now() - interval '30 days'` |
+| — | Eventos de seguridad, notificaciones, solicitudes de ubicación y sesiones cerradas de más de 30 días: se suman por día y tipo a `safety_event_daily_stat` y se eliminan (PRD F-10, RNF-PRI-03) |
 
 Ventajas sobre un TTL documento a documento: el borrado de una partición es instantáneo, no fragmenta los índices ni genera carga de escritura, y la retención se garantiza a nivel de día.
+
+El historial que ve el tutor cubre los mismos 30 días que las ubicaciones. Más allá de ese plazo solo queda el agregado anónimo, que alimenta las métricas de producto (PRD §10) sin identificar a ningún menor.
 
 ```sql
 -- Ejecutado por retention-purge para cada partición cuyo límite superior es anterior a now() - 30 días.
@@ -3022,18 +3085,34 @@ DELETE FROM location_sample
       WHERE captured_at < now() - interval '30 days'
       LIMIT 5000);
 
--- Anulación de coordenadas en eventos de más de 30 días (el evento se conserva).
-UPDATE safety_event
-   SET latitude = NULL, longitude = NULL, accuracy_meters = NULL, updated_at = now()
+-- Eventos de más de 30 días: primero se agregan, después se eliminan, en la misma transacción.
+INSERT INTO safety_event_daily_stat (stat_date, event_type_id, event_count)
+SELECT (occurred_at AT TIME ZONE 'UTC')::date, event_type_id, count(*)
+  FROM safety_event
  WHERE occurred_at < now() - interval '30 days'
-   AND latitude IS NOT NULL;
+ GROUP BY 1, 2
+ON CONFLICT (stat_date, event_type_id) DO UPDATE
+   SET event_count = safety_event_daily_stat.event_count + EXCLUDED.event_count,
+       updated_at = now();
+
+-- Las notificaciones se eliminan en cascada con su evento.
+DELETE FROM safety_event WHERE occurred_at < now() - interval '30 days';
+
+DELETE FROM location_request WHERE created_at < now() - interval '30 days';
+
+DELETE FROM watch_session
+ WHERE window_ends_at < now() - interval '30 days'
+   AND status IN ('closed', 'cancelled');
 ```
+
+En operación, cada `DELETE` se ejecuta por lotes de 5 000 filas, con el agregado del mismo lote en la misma transacción, para no bloquear tablas.
 
 ### 4.6 Diagrama del modelo
 
 ```mermaid
 erDiagram
     guardian ||--o{ family_membership : "pertenece"
+    guardian ||--o{ account_token : "recibe por correo"
     family_group ||--o{ family_membership : "tiene"
     family_group ||--o{ child : "agrupa"
     family_group ||--o{ destination : "define"
@@ -3045,6 +3124,7 @@ erDiagram
     child ||--o{ location_sample : ""
     child ||--o{ safety_event : "alertas"
     cat_event_type ||--o{ safety_event : "tipo"
+    cat_event_type ||--o{ safety_event_daily_stat : "agregado anónimo"
     destination ||--o{ safety_event : ""
     safety_event ||--o{ notification : "notifica"
     guardian ||--o{ notification : "recibe"
@@ -3070,11 +3150,12 @@ Tamaño estimado por fila (datos + índices) y volumen a 30 días:
 |---|---|---|---|---|
 | `location_sample` (retenida 30 días) | ~200 | ~1 MB | ~1,4 GB | ~14 GB |
 | `device_event` (retenida 30 días) | ~250 | ~1 MB | ~0,8 GB | ~7,5 GB |
-| `safety_event` (por año) | ~180 | ~2 MB | ~3 GB | ~30 GB |
-| `watch_session` (por año) | ~160 | ~2 MB | ~2,9 GB | ~29 GB |
+| `safety_event` (retenida 30 días) | ~180 | < 1 MB | ~0,25 GB | ~2,4 GB |
+| `watch_session` (retenida 30 días) | ~160 | < 1 MB | ~0,07 GB | ~0,7 GB |
+| `safety_event_daily_stat` (por año) | ~100 | < 1 MB | < 1 MB | < 1 MB |
 | Resto | — | < 10 MB | < 1 GB | ~5 GB |
 
-Con PostgreSQL autoalojado no hay un límite de 512 MB: el piloto completo ocupa menos de 50 MB y el crecimiento lo absorbe el disco del servidor (dimensionamiento en §2.3). Las tablas sin coordenadas que crecen indefinidamente (`watch_session`, `safety_event`) se archivan por año si fuera necesario.
+Con PostgreSQL autoalojado no hay un límite de 512 MB: el piloto completo ocupa menos de 50 MB y el crecimiento lo absorbe el disco del servidor (dimensionamiento en §2.3). Como todas las tablas con datos de menores se purgan a los 30 días, el volumen se estabiliza y solo crece el agregado anónimo, de tamaño despreciable.
 
 ---
 
@@ -3084,7 +3165,7 @@ Con PostgreSQL autoalojado no hay un límite de 512 MB: el piloto completo ocupa
 
 | Campo | Contenido |
 |---|---|
-| ID | `QA-<área>-<nn>`: `GPS` precisión, `NET` red, `CYC` ciclo de 20 minutos, `WS` WebSocket |
+| ID | `QA-<área>-<nn>`: `GPS` precisión, `NET` red, `CYC` ciclo de 20 minutos, `WS` WebSocket, `AUT` cuenta y autenticación, `FAM` grupo familiar, menores y vinculación, `DST` destinos, `EVT` eventos de vigilancia, `NTF` notificaciones y preferencias, `DEV` estado del dispositivo, `HIS` historial, `PRV` privacidad |
 | Nivel | `U` unitaria, `I` integración (Testcontainers), `E` emulador (escenarios del SDD §15.4), `C` campo (dispositivo físico) |
 | Trazabilidad | Requisitos que verifica |
 
@@ -3150,13 +3231,107 @@ Constantes usadas en los casos: radio 150 m, histéresis 50 m, margen máximo 50
 | QA-WS-06 | Tutor conectado sin enviar latidos. | 1. Esperar 60 s. | Cierre con `4408`. | I | RNF-PER-06b |
 | QA-WS-07 | Ciclo de verificación con el menor dentro. | 1. Ejecutar el ciclo. | **No** se emite `location:ping` (las lecturas de verificación no se muestran al tutor). | I | RF-046, RNF-PRI-04 |
 
-### 5.6 Plan de aseguramiento de calidad
+### 5.6 Cuenta y autenticación
 
-#### 5.6.1 Objetivo y alcance
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-AUT-01 | Correo sin cuenta; aviso de privacidad vigente publicado. | 1. `POST /auth/register` con datos válidos y `acceptedPrivacyNoticeVersion` vigente. | `201`; `guardian.is_email_verified = false`; se crean `family_group` y `family_membership` con rol `owner`; se registra `consent` con versión y fecha; el correo de verificación llega a Mailpit. | I, E | RF-001, RF-010, RF-060 |
+| QA-AUT-02 | Cuenta existente con `laura@example.com`. | 1. Registrar `Laura@Example.com`. | `409` con `AUT-004`; no se crean filas nuevas (el correo se normaliza a minúsculas). | I | RF-001 |
+| QA-AUT-03 | — | 1. Registrar con las contraseñas `abc12`, `abcdefgh`, `12345678` y `Escuela2026`. | Las tres primeras responden `400` con `VAL-001` y `errors[].field = password`; la cuarta se acepta. | U, I | RF-005 |
+| QA-AUT-04 | Verificador de Google simulado que acepta un ID token con `sub` nuevo. | 1. `POST /auth/google`. 2. Repetir con el mismo `sub`. | 1: cuenta creada sin `password_hash`, con `external_login (google, sub)` e `is_email_verified = true`. 2: devuelve la misma cuenta, sin duplicados. | I | RF-002 |
+| QA-AUT-05 | Verificador simulado. | 1. `POST /auth/google` con un token de otra audiencia. 2. Con un token vencido. | `401` con `AUT-001` en ambos casos. | U, I | RF-002 |
+| QA-AUT-06 | Tutor registrado sin verificar. | 1. `POST /family-groups/{id}/children`. 2. Verificar con el enlace de Mailpit. 3. Repetir el paso 1. | 1: `403` con `AUT-002`. 3: `201`. El token queda con `used_at`. | I, E | RF-003 |
+| QA-AUT-07 | Token de verificación usado, y otro emitido hace 24 h + 1 min (reloj controlado). | 1. `POST /auth/email/verify` con cada token. | `400` con `AUT-006` en ambos; la cuenta sigue sin verificar. | U, I | RF-003 |
+| QA-AUT-08 | Un correo registrado y otro no. | 1. `POST /auth/password/forgot` con cada correo. | Misma respuesta (estado y cuerpo) en ambos; solo el registrado recibe el correo. | I | RF-004 |
+| QA-AUT-09 | Token de recuperación vigente. | 1. `POST /auth/password/reset` con contraseña nueva. 2. Iniciar sesión con la anterior y con la nueva. | Contraseña cambiada; token con `used_at`; todos los tokens de refresco del tutor revocados; login antiguo `401`, nuevo `200`. | I | RF-004 |
+| QA-AUT-10 | Token de recuperación usado, y otro emitido hace 61 min. | 1. `POST /auth/password/reset` con cada uno. | `400` con `AUT-006`; contraseña sin cambios. | U, I | RF-004 |
+| QA-AUT-11 | Tutor con sesión iniciada hace 20 min. | 1. `DELETE /me` sin reautenticación reciente. | `401` con `AUT-007`; la cuenta no cambia. | I | RF-006 |
+| QA-AUT-12 | Tutor reautenticado hace 1 min, con un menor vinculado y un tutor secundario. | 1. `DELETE /me`. | `deletion_requested_at` fijado; dispositivo desvinculado y sus tokens revocados de inmediato; tutor secundario notificado; tarea `data-erasure` programada. | I | RF-006, RF-063 |
+
+### 5.7 Grupo familiar, menores y vinculación
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-FAM-01 | Tutor principal con grupo. | 1. Crear invitación por enlace. 2. Otro usuario la acepta. | El invitado queda como `member`; el principal recibe aviso; ambos ven el grupo en `GET /family-groups`. | I, E | RF-011 |
+| QA-FAM-02 | Invitación emitida hace 7 días + 1 min. | 1. Aceptarla. | `410` con `FAM-002`. | U, I | RF-011 |
+| QA-FAM-03 | Tutor secundario. | 1. `POST /family-groups/{id}/invitations`. | `403` con `FAM-003`. | I | RF-011 |
+| QA-FAM-04 | Grupo con tutor secundario. | 1. El principal lo revoca. 2. El revocado consulta un menor del grupo. 3. Se registra una llegada. | 2: `403` con `FAM-004`. 3: el revocado no recibe push ni fila de `notification`. | I | RF-012 |
+| QA-FAM-05 | Tutor miembro de dos grupos, cada uno con un menor. | 1. `GET /family-groups`. 2. Cambiar de grupo en el selector de la app. 3. Registrar una llegada en cada grupo. | 1: ambos grupos. 2: la app muestra solo los datos del grupo elegido. 3: el tutor recibe las dos llegadas; los demás miembros, solo las de su grupo. | I, E | RF-013 |
+| QA-FAM-06 | Tutor verificado con consentimiento. | 1. Crear, editar y consultar un menor. 2. Un tutor de otro grupo consulta ese menor. | 1: operaciones correctas. 2: `403` con `FAM-004`. | I | RF-014 |
+| QA-FAM-07 | Menor sin dispositivo. | 1. Generar código. 2. Canjearlo a los 10 min. 3. Canjearlo otra vez. 4. Generar otro y canjearlo a los 15 min + 1 s. | 2: `200` con tokens de dispositivo. 3 y 4: `400` con `DEV-001`. | I, E | RF-015 |
+| QA-FAM-08 | — | 1. Seis canjes con códigos erróneos en 15 min desde el mismo dispositivo. | El sexto responde `429` con `DEV-003`. | I | RF-015 |
+| QA-FAM-09 | Menor con dispositivo A vinculado. | 1. Vincular el dispositivo B. 2. A hace una petición. | Solo B queda activo (`uq_device_child_id_active`); A tiene `unpaired_at`; su siguiente petición recibe `401` y elimina geocercas, cola y trabajos. | I, E | RF-016, RF-019 |
+| QA-FAM-10 | Emulador Android 14 con Google Play. | 1. Vincular y conceder solo "Mientras se usa la app". 2. Cambiar a "Permitir todo el tiempo". | 1: `pairing_status = incomplete`, el asistente indica cómo corregirlo y el tutor recibe un aviso. 2: `complete`. | E | RF-017 |
+| QA-FAM-11 | Emulador sin Google Play Services. | 1. Abrir la app. 2. Intentar vincular por API con `hasGooglePlayServices = false`. | 1: pantalla de dispositivo no compatible. 2: `422` con `DEV-004`. | E, I | RF-017, R-15 |
+| QA-FAM-12 | Modo Menor vinculado. | 1. Abrir la app, rotar, reiniciar el dispositivo y reabrir. 2. Recorrer la pantalla con TalkBack. | El aviso de transparencia está siempre visible y TalkBack lo lee. | E (Espresso) | RF-018 |
+| QA-FAM-13 | Menor con dispositivo vinculado y geocercas registradas. | 1. Un tutor desvincula con `DELETE /children/{id}/device`. 2. El dispositivo envía su siguiente latido. | 2: `401`; la app retira todas las geocercas de `GeofencingClient`, vacía la cola y cancela sus trabajos. | I, E | RF-019 |
+
+### 5.8 Destinos
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-DST-01 | Photon local con el índice de prueba. | 1. Buscar "insurgentes sur 1234". 2. Tocar un punto del mapa. | 1: sugerencias en ≤ 1 s (p95 en 100 repeticiones). 2: dirección por geocodificación inversa. | I, E | RF-020 |
+| QA-DST-02 | Photon detenido. | 1. Buscar una dirección. 2. Colocar un marcador manual y guardar. | 1: `503` con `GEO-001` y aviso en la app. 2: el destino se guarda con las coordenadas del marcador. | I, E | RF-020 |
+| QA-DST-03 | — | 1. Crear destinos con radio 99, 100, 1 000 y 1 001 m. 2. Insertar por SQL un destino con radio 99. | 1: `400` con `VAL-001` para 99 y 1 001. 2: la base lo rechaza por `ck_destination_radius_meters`. | I | RF-021 |
+| QA-DST-04 | — | 1. Enviar horarios con fin ≤ inicio, hora esperada fuera de la ventana, `weekly` sin días y `once` sin fecha. 2. Repetir por SQL. | 1: `400` con `VAL-001` o `422` con `DST-003` según el caso. 2: rechazados por las restricciones `ck_destination_schedule_*`. | U, I | RF-023, RF-024 |
+| QA-DST-05 | Menor con 10 destinos activos. | 1. Crear un undécimo. 2. Pausar uno y crear el undécimo. 3. Reanudar el pausado. | 1: `422` con `DST-002`. 2: `201`. 3: `422` con `DST-002`. | I | RF-026 |
+
+### 5.9 Eventos de vigilancia
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-EVT-01 | Llegada notificada en la sesión. | 1. El menor sale menos de 3 min y vuelve (nuevo `DWELL`). | Ningún segundo `ARRIVAL`; un solo push de llegada en la sesión. | I | RF-031 |
+| QA-EVT-02 | Sesión `awaiting`; dos instancias del Worker. | 1. Procesar en paralelo dos `DWELL` distintos de la misma sesión. | Un solo `ARRIVAL` (bloqueo por menor y `uq_safety_event_dedup_key`). | I | RF-031, RF-037 |
+| QA-EVT-03 | Sesión `away`. | 1. El dispositivo envía `DWELL` del destino. | `away → present`, `RETURN` y aviso por el canal `arrivals`. | I, E | RF-033 |
+| QA-EVT-04 | Sesión `awaiting` con plazo de llegada vencido. | 1. La ubicación fresca llega dentro del destino 90 s después del `LOCATION_REQUEST`. | `ARRIVAL`; no se emite `NO_ARRIVAL`. | I | RF-035 |
+| QA-EVT-05 | Como QA-EVT-04. | 1. El dispositivo no responde. | Al vencer los 2 min, `NO_ARRIVAL` con la última ubicación conocida, su antigüedad y la indicación de que no se obtuvo la actual. | I | RF-035 |
+
+### 5.10 Notificaciones y preferencias
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-NTF-01 | App del tutor con caché de menores y destinos; destino en `America/Mexico_City`. | 1. Entregar a `NotificationRenderer` un mensaje de datos `ARRIVAL`. 2. Inspeccionar el mensaje enviado (`LogPushSender`). | 1: texto "Sofía llegó a Escuela · 07:21" con la hora en la zona del destino. 2: el mensaje no contiene nombres, direcciones ni coordenadas. | U (Robolectric), I | RF-038, RNF-PRI-07 |
+| QA-NTF-02 | App sin caché del menor. | 1. Entregar un mensaje `ARRIVAL`. | Texto genérico y consulta a `GET /me/notifications` para completar el detalle. | U | RF-038 |
+| QA-NTF-03 | Grupo con tres tutores: uno con dos tokens, uno con un token y uno con la llegada desactivada. | 1. Registrar una llegada. | Tres envíos a FCM; `notification` en `sent` para dos tutores y en `skipped` para el tercero; los tres la ven en la bandeja. | I | RF-039, RF-053 |
+| QA-NTF-04 | FCM simulado devuelve `UNREGISTERED` para un token. | 1. Despachar una notificación. | `guardian_push_token.invalidated_at` fijado; sin reintento para ese token; los demás tokens se envían. | I | RF-039 |
+| QA-NTF-05 | Llegada desactivada para el destino "Escuela" y activa como preferencia global. | 1. Llegada a "Escuela". 2. Llegada a "Casa". | 1: `skipped`. 2: enviada. | I | RF-053 |
+| QA-NTF-06 | Tutor con acceso a "No molestar" concedido y otro sin él. | 1. Registrar una salida con el teléfono en "No molestar". | Primero: la alerta suena por el canal `priority_alerts`. Segundo: llega por el canal de prioridad alta sin saltar "No molestar". | E, C | RF-054 |
+| QA-NTF-07 | Tutor con `is_priority = false` para `DEPARTURE`. | 1. Registrar una salida. | La alerta usa el canal `alerts`, no `priority_alerts`. | U, I | RF-054 |
+
+### 5.11 Estado del dispositivo
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-DEV-01 | Sesión activa. | 1. Latidos con batería 14 %, 13 % y 10 %. | Un solo `BATTERY_LOW` en la sesión. | I | RF-042 |
+| QA-DEV-02 | Sin sesión activa. | 1. Latido con batería 10 %. | Ninguna alerta. | I | RF-042 |
+| QA-DEV-03 | Dispositivo vinculado. | 1. Enviar un latido con permisos, batería y versión de configuración. 2. `GET /children/{id}` y pantalla Detalle de menor. | Permisos, última conexión y batería actualizados, con su antigüedad ("hace 2 min"). | I, E | RF-043 |
+
+### 5.12 Historial
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-HIS-01 | Grupo con dos tutores. | 1. Jorge consulta la ubicación del menor. 2. Laura abre el historial. | `LOCATION_QUERY` con `actor_guardian_id` de Jorge, visible para Laura con su nombre. | I, E | RF-051 |
+| QA-HIS-02 | 200 eventos de tres tipos en dos destinos. | 1. Filtrar por tipo, destino y rango de fechas. 2. Recorrer todas las páginas. | Solo eventos coincidentes, en orden descendente; la paginación por cursor no repite ni omite eventos. | I | RF-052 |
+| QA-HIS-03 | Eventos de hace 31 días. | 1. Ejecutar `retention-purge`. 2. Consultar el historial. | Los eventos de más de 30 días ya no existen; sus conteos se suman a `safety_event_daily_stat`. | I | RF-052, RNF-PRI-03 |
+
+### 5.13 Privacidad
+
+| ID | Precondición | Pasos | Resultado esperado | Nivel | Trazabilidad |
+|---|---|---|---|---|---|
+| QA-PRV-01 | Tutor sin consentimiento `child_location`. | 1. Crear un menor. 2. `POST /me/consents`. 3. Repetir el paso 1. | 1: `403` con `PRV-001`. 3: `201`; `consent` con versión del aviso y fecha. | I | RF-060 |
+| QA-PRV-02 | Se publica una versión nueva del aviso. | 1. `GET /me`. 2. Abrir la app. 3. Crear un menor sin aceptar. 4. Aceptar. | 1: consentimiento pendiente. 2: la app muestra "Nuevo aviso de privacidad" antes de continuar. 3: `403` con `PRV-001`. 4: operación permitida. | I, E | RF-061 |
+| QA-PRV-03 | Grupo con dos menores, destinos y eventos. | 1. El principal solicita la exportación. 2. Un tutor secundario la solicita. | 1: `202`; la tarea `data-export` genera un JSON con todos los menores, destinos y eventos del grupo; el enlace caduca. 2: `403` con `FAM-003`. | I | RF-062 |
+| QA-PRV-04 | Tutor con `deletion_requested_at` fijado. | 1. Ejecutar `data-erasure`. 2. Consulta de auditoría por `guardian_id` y `family_group_id` en todas las tablas. | Ninguna fila del grupo en ninguna tabla. | I | RF-063 |
+| QA-PRV-05 | Borrado ejecutado hace 30 días. | 1. Listar los respaldos de pgBackRest. 2. Restaurar el más antiguo en un ambiente aislado. | Ningún respaldo anterior al borrado sigue disponible, o el restaurado no contiene datos del grupo. | C (operación, trimestral) | RF-063 |
+| QA-PRV-06 | Grupo con dos menores. | 1. `DELETE /children/{id}` de uno. 2. Ejecutar `data-erasure`. | Datos del menor eliminados (perfil, dispositivo, sesiones, eventos, ubicaciones); el resto del grupo intacto. | I | RF-014, RF-063 |
+
+### 5.14 Plan de aseguramiento de calidad
+
+#### 5.14.1 Objetivo y alcance
 
 Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del PRD §8 y los criterios de liberación CA-10, con énfasis en los tres riesgos con más impacto en la confianza del producto: falsas alertas, eventos perdidos y consumo de batería.
 
-#### 5.6.2 Niveles de prueba
+#### 5.14.2 Niveles de prueba
 
 | Nivel | Responsable | Herramientas | Cuándo | Criterio de salida |
 |---|---|---|---|---|
@@ -3172,7 +3347,7 @@ Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del P
 | Accesibilidad | QA | Accessibility Scanner, comprobaciones de Espresso | Antes del lanzamiento | WCAG 2.1 AA en pantallas del tutor |
 | Campo (piloto) | Producto + QA | Dispositivos reales, Battery Historian, métricas del backend | 2 semanas, 20 familias (CA-10) | RNF-FIA-02, RNF-FIA-03, RNF-PER-03 |
 
-#### 5.6.3 Ambientes
+#### 5.14.3 Ambientes
 
 | Ambiente | Uso | Datos |
 |---|---|---|
@@ -3181,7 +3356,7 @@ Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del P
 | UAT | Validación de producto | Familias de prueba internas con consentimiento |
 | Producción (piloto) | Prueba de campo | Familias reales con consentimiento expreso |
 
-#### 5.6.4 Matriz de dispositivos
+#### 5.14.4 Matriz de dispositivos
 
 | Fabricante | Modelos de referencia | Versiones de Android | Motivo |
 |---|---|---|---|
@@ -3192,19 +3367,19 @@ Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del P
 | Oppo / Realme | Gama media | 12, 14 | Restricción de inicio automático |
 | Huawei (sin Google Play Services) | Modelo reciente | — | Verificar el rechazo con `DEV-004` (R-15) |
 
-#### 5.6.5 Criterios de entrada y salida de la liberación
+#### 5.14.5 Criterios de entrada y salida de la liberación
 
 **Entrada a QA:** build verde en CI (incluidas la verificación de licencias y de vulnerabilidades), migraciones aplicadas en QA y notas de cambio con los requisitos afectados.
 
 **Salida (liberación del MVP):**
 
-- Todos los casos de §5.2 a §5.5 en verde en su nivel.
+- Todos los casos de §5.2 a §5.13 en verde en su nivel.
 - Ningún defecto abierto de severidad crítica o alta.
 - Piloto: detección de llegadas ≥ 98 %, falsas alertas de salida ≤ 2 %, latencia de notificación p95 ≤ 60 s, batería ≤ 5 % diario.
 - Inventario de licencias sin incumplimientos (RNF-LIC-01 a RNF-LIC-03).
 - Revisión MASVS L1 y aviso de privacidad aprobados.
 
-#### 5.6.6 Severidad de defectos
+#### 5.14.6 Severidad de defectos
 
 | Severidad | Definición | Ejemplos |
 |---|---|---|
@@ -3213,7 +3388,7 @@ Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del P
 | Media | Funcionalidad Should degradada o Must con alternativa | WebSocket no reconecta (el push sí llega) |
 | Baja | Defecto visual o de texto | Hora mal formateada |
 
-#### 5.6.7 Métricas de calidad
+#### 5.14.7 Métricas de calidad
 
 | Métrica | Fuente | Meta |
 |---|---|---|
@@ -3225,6 +3400,6 @@ Verificar que el MVP cumple los requisitos Must y Should de §1.2, los RNF del P
 | Sesiones sin fallos | ACRA | ≥ 99,5 % |
 | Defectos escapados a producción | Seguimiento de incidencias | 0 críticos en el piloto |
 
-#### 5.6.8 Trazabilidad requisito ↔ prueba
+#### 5.14.8 Trazabilidad requisito ↔ prueba
 
 Cada prueba automatizada lleva la etiqueta del requisito que verifica (`@Tag("RF-044")` en JUnit 5; anotación `@Requirement("RF-044")` propia en Android), de modo que la suite puede filtrarse por requisito y el reporte de CI muestra la cobertura por requisito. Un requisito Must sin al menos una prueba etiquetada bloquea la liberación.

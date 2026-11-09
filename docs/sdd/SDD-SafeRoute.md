@@ -4,12 +4,12 @@
 |---|---|
 | Producto | SafeRoute (aplicación móvil) |
 | Documento | Software Design Document |
-| Versión | 0.3 |
+| Versión | 0.4 |
 | Estado | Borrador para revisión |
-| Fecha | 2026-10-22 |
+| Fecha | 2026-11-09 |
 | Responsable | Darvy |
-| Documento de origen | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.3 |
-| Documento relacionado | [ETS-SafeRoute.md](ETS-SafeRoute.md): requisitos detallados, contratos OpenAPI, protocolo WebSocket, DDL y plan de QA |
+| Documento de origen | [PRD-SafeRoute.md](../prd/PRD-SafeRoute.md) v0.4 |
+| Documentos relacionados | [ETS-SafeRoute.md](ETS-SafeRoute.md) v1.1: requisitos detallados, contratos OpenAPI, protocolo WebSocket, DDL y plan de QA · [TRAZABILIDAD.md](../analysis/TRAZABILIDAD.md) v1.1 |
 
 ### Historial de cambios
 
@@ -18,6 +18,7 @@
 | 0.1 | 2026-10-20 | Versión inicial: React Native, .NET, Azure SQL, Azure Service Bus, Google Maps. |
 | 0.2 | 2026-10-20 | Rediseño con **Java** y **componentes gratuitos sin costo de licencia**: Android nativo en Java, Spring Boot, PostgreSQL, cola de tareas sobre PostgreSQL, FCM, OpenStreetMap con teselas y geocodificador autoalojados. Se agregan el análisis de licenciamiento (§14) y la guía de ejecución local (§15). iOS sale del alcance del MVP. |
 | 0.3 | 2026-10-22 | Alineación con la ETS: canal WebSocket para la app del tutor (§4.13, ADR-017), uso breve de Foreground Service vía WorkManager (ADR-018), historial de ubicaciones puntuales (`GET /locations/history/{childId}`), tarea `partition-maintenance`, `child_id` en `location_sample`, nuevos códigos de error, UUID v7 generados en la aplicación y cifrado en reposo autoalojado. |
+| 0.4 | 2026-11-09 | Corrección de los hallazgos de la matriz de trazabilidad: tabla `account_token` (H-03); tarea `data-erasure` y retención de respaldos ≤ 30 días (H-04); caducidad de la consulta bajo demanda (H-05); retención de eventos, sesiones y notificaciones a 30 días con agregado anónimo, alineada con el PRD F-10 (H-06); endpoint de reportes de fallos (H-07); se retira el origen `heartbeat` (H-08); servicios `RealtimeService` y `LocationHistoryService` y tarea `partition-maintenance` en los diagramas (H-09); `GeoMath`, `GeofenceSyncWorker` y `RealtimeClient` en la estructura Android (H-10); pantallas de selección de grupo y de nuevo aviso de privacidad (H-11); tarea `data-export` (H-12). |
 
 ---
 
@@ -177,12 +178,12 @@ flowchart TB
     end
 
     subgraph Worker["saferoute-worker"]
-        TASKS["Tareas db-scheduler<br/>ProcessDeviceEvent, WindowOpened,<br/>ArrivalDeadline, VerificationDue,<br/>VerificationTimeout, DepartureConfirmation,<br/>WindowClosed, DispatchNotification"]
-        REC["Tareas recurrentes<br/>SessionMaterializer, RetentionPurge,<br/>PushTokenCleanup"]
+        TASKS["Tareas db-scheduler<br/>ProcessDeviceEvent, WindowOpened,<br/>ArrivalDeadline, VerificationDue,<br/>VerificationTimeout, DepartureConfirmation,<br/>WindowClosed, DispatchNotification,<br/>DataErasure, DataExport"]
+        REC["Tareas recurrentes<br/>SessionMaterializer, RetentionPurge,<br/>PartitionMaintenance, PushTokenCleanup"]
     end
 
     subgraph Application["saferoute-application"]
-        UC["Casos de uso<br/>AccountService, FamilyService,<br/>ChildService, PairingService,<br/>DestinationService, DeviceEventService,<br/>WatchSessionService, VerificationService,<br/>LocationRequestService, NotificationService,<br/>GeocodingService, PrivacyService"]
+        UC["Casos de uso<br/>AccountService, FamilyService,<br/>ChildService, PairingService,<br/>DestinationService, DeviceEventService,<br/>WatchSessionService, VerificationService,<br/>LocationRequestService, LocationHistoryService,<br/>NotificationService, RealtimeService,<br/>GeocodingService, PrivacyService"]
         PORTS["Puertos de salida<br/>repositorios, TaskScheduler,<br/>PushSender, Geocoder, Mailer, Clock"]
         DTO["DTOs (records)"]
     end
@@ -232,7 +233,7 @@ flowchart TB
 
         subgraph Menor["Modo Menor"]
             FM["feature/childmode<br/>vinculación (QR), permisos,<br/>pantalla de transparencia"]
-            LE["core/location<br/>GeofenceManager, GeofenceReceiver,<br/>LocationRequestWorker,<br/>EventUploadWorker, BootReceiver"]
+            LE["core/location<br/>GeofenceManager, GeofenceReceiver,<br/>LocationRequestWorker, GeofenceSyncWorker,<br/>EventUploadWorker, BootReceiver, GeoMath"]
         end
 
         subgraph Core["core"]
@@ -240,6 +241,7 @@ flowchart TB
             AUTH["auth<br/>sesión, tokens cifrados con Tink"]
             NOTIF["notifications<br/>SafeRouteMessagingService,<br/>canales, construcción local"]
             DATA["data<br/>Room (cola offline, caché)"]
+            RT["realtime<br/>RealtimeClient (WebSocket, solo modo Tutor)"]
         end
 
         subgraph Shared["shared"]
@@ -387,9 +389,11 @@ El esquema es nuevo, así que hay **dos niveles de modelo**: entidad de dominio 
 | Eventos de dispositivo | `DeviceEventService` | RF-036, RF-037, RF-040 – RF-043 |
 | Verificación periódica | `VerificationService` | RF-044 |
 | Ubicación bajo demanda | `LocationRequestService` | RF-050, RF-051 |
+| Historial de ubicaciones | `LocationHistoryService` | RF-046 |
 | Notificaciones | `NotificationService` | RF-038, RF-039, RF-053, RF-054 |
+| Tiempo real | `RealtimeService` (suscripciones, `LISTEN`, `sync:request`) | RF-045 |
 | Búsqueda de direcciones | `GeocodingService` | RF-020 |
-| Privacidad | `PrivacyService` | RF-060 – RF-063 |
+| Privacidad | `PrivacyService` (consentimiento, exportación y borrado) | RF-060 – RF-063 |
 
 ### 4.5 Máquina de estados de la sesión de vigilancia
 
@@ -450,10 +454,12 @@ db-scheduler persiste las tareas en la tabla `scheduled_tasks` de PostgreSQL. El
 | `window-opened` | Única, programada | `{watchSessionId}` | Materializador | `scheduled → awaiting`; programa el primer ciclo de verificación. |
 | `arrival-deadline` | Única, programada | `{watchSessionId}` | Materializador | Plazo de llegada (§8.5). |
 | `verification-due` | Única, programada | `{watchSessionId}:{cycle}` | Worker | Ciclo de verificación (§9). |
-| `verification-timeout` | Única, programada | `{locationRequestId}` | Worker | Vence la espera de una ubicación solicitada. |
+| `verification-timeout` | Única, programada | `{locationRequestId}` | Worker o API | Vence la espera de una ubicación solicitada y marca la `location_request` como `timed_out`: 2 min para `arrival_confirmation` y `arrival_deadline`, 5 min para `verification` y 30 s para `on_demand` (la programa el API al crear la consulta del tutor). |
 | `departure-confirmation` | Única, programada | `{watchSessionId}:{cycle}` | Worker | Confirma una salida sospechada a los 3 min. |
 | `window-closed` | Única, programada | `{watchSessionId}` | Materializador | Cierra la sesión. |
 | `dispatch-notification` | Única, inmediata | `{notificationId}` | Servicios de dominio | Envío a FCM (§10). |
+| `data-erasure` | Única, inmediata | `guardian:{guardianId}` o `child:{childId}` | API (`DELETE /me`, `DELETE /children/{id}`) | Borrado físico de los datos del titular (§4.12, RF-063). |
+| `data-export` | Única, inmediata | `{dataExportId}` | API (`POST /family-groups/{id}/exports`) | Genera el JSON del grupo, lo guarda con caducidad de 7 días y marca `data_export` como listo (RF-062). |
 | `session-materializer` | Recurrente, cada hora | — | — | §4.6 |
 | `retention-purge` | Recurrente, diaria 03:00 UTC | — | — | §4.12 |
 | `partition-maintenance` | Recurrente, diaria | — | — | Crea las particiones mensuales de `location_sample` y `device_event` de los dos meses siguientes. |
@@ -481,6 +487,8 @@ Capacidad: el volumen estimado (~12 tareas/s de media, ~120/s en picos de entrad
 - Contraseñas con `Argon2PasswordEncoder` de Spring Security (BouncyCastle, MIT).
 - Inicio de sesión con Google: la app obtiene un ID token con Credential Manager; el API lo verifica con `GoogleIdTokenVerifier` (google-api-client, Apache 2.0) contra las claves públicas de Google y el `client_id` configurado. El proyecto de Google Cloud y el cliente OAuth son gratuitos.
 - Tokens de refresco guardados como hash SHA-256; reutilizar un token ya rotado revoca toda su familia (detección de robo).
+- Los tokens enviados por correo (verificación de correo, 24 h; recuperación de contraseña, 60 min) se guardan como hash en `account_token`, son de un solo uso y un token usado o vencido responde `AUT-006`. Restablecer la contraseña revoca todos los tokens de refresco del tutor.
+- Eliminar la cuenta exige reautenticación en los últimos 5 minutos; si no, `AUT-007`.
 - Políticas de autorización, evaluadas en el servicio de aplicación por consulta de pertenencia (RNF-SEG-04):
   - `GuardianOfFamily`: el tutor pertenece al grupo del recurso.
   - `FamilyOwner`: operaciones reservadas al tutor principal.
@@ -504,7 +512,7 @@ Prefijos de dominio, además de los transversales `VAL`, `INF`, `INT` y `UNX`:
 
 | Prefijo | Dominio | Ejemplos |
 |---|---|---|
-| `AUT` | Autenticación | `AUT-001` credenciales inválidas, `AUT-002` correo no verificado, `AUT-003` token de refresco reutilizado, `AUT-004` correo ya registrado, `AUT-005` demasiados intentos |
+| `AUT` | Autenticación | `AUT-001` credenciales inválidas, `AUT-002` correo no verificado, `AUT-003` token de refresco reutilizado, `AUT-004` correo ya registrado, `AUT-005` demasiados intentos, `AUT-006` token de un solo uso inválido o vencido, `AUT-007` reautenticación requerida |
 | `FAM` | Grupo familiar | `FAM-001` grupo no encontrado, `FAM-002` invitación expirada, `FAM-003` operación reservada al tutor principal, `FAM-004` el tutor no pertenece al grupo del recurso |
 | `CHD` | Menores | `CHD-001` menor no encontrado |
 | `DEV` | Dispositivos y vinculación | `DEV-001` código inválido o expirado, `DEV-002` dispositivo no vinculado, `DEV-003` demasiados intentos, `DEV-004` dispositivo sin Google Play Services |
@@ -549,10 +557,16 @@ La unicidad de los códigos se verifica con una prueba (`ErrorsTest`).
 `retention-purge` corre cada noche:
 
 - Elimina `location_sample` y `device_event` con más de 30 días (RNF-PRI-03) con `DROP` de las particiones mensuales vencidas y borrado por lotes del resto (§6.4, ETS §4.5).
-- Anula las coordenadas de `safety_event` con más de 30 días.
+- Suma por día y tipo los `safety_event` de más de 30 días en `safety_event_daily_stat` (sin menor, grupo ni coordenadas) y los elimina junto con sus `notification`, las `location_request` y las `watch_session` cerradas o canceladas de más de 30 días. Así el historial dura 30 días, como fija el PRD F-10, y más allá solo quedan eventos agregados (RNF-PRI-03).
 - Borra en lotes de 5 000 filas para no bloquear tablas.
 
-El ejercicio del derecho de cancelación (RF-063, CU-09) elimina físicamente el agregado completo del grupo familiar, como excepción explícita al borrado lógico (ADR-010).
+**Derecho de cancelación (RF-063, CU-09).** Elimina físicamente los datos del titular, como excepción explícita al borrado lógico (ADR-010):
+
+1. Al recibir `DELETE /me` o `DELETE /children/{id}`, en la misma transacción: se fija `deletion_requested_at` (cuenta), se desvinculan los dispositivos, se revocan sus tokens y se programa la tarea `data-erasure`.
+2. `data-erasure` borra físicamente, en el orden de las claves foráneas, todas las filas del titular: para una cuenta de tutor principal, el grupo completo (salvo que haya transferido el rol, CU-09 3a); para un menor, su perfil, dispositivo, sesiones, eventos, ubicaciones y solicitudes. Se ejecuta en minutos.
+3. La réplica de PostgreSQL recibe el borrado por replicación.
+4. **Respaldos:** pgBackRest conserva respaldos completos semanales con retención por tiempo de 21 días (`repo1-retention-full-type=time`, `repo1-retention-full=21`). Como pgBackRest mantiene además el respaldo completo previo necesario para recuperar el inicio de esa ventana, el respaldo más antiguo que puede contener los datos borrados caduca a más tardar a los 28 días. Esto cumple el plazo de 30 días de RF-063 y conserva la recuperación a un punto en el tiempo exigida por RNF-FIA-06. Se verifica trimestralmente (ETS QA-PRV-05).
+5. Los logs no contienen datos personales (RNF-SEG-08), así que no requieren borrado.
 
 ### 4.13 Canal en tiempo real (WebSocket)
 
@@ -612,7 +626,9 @@ android/
         │   │   ├── auth/           SessionManager, SecureTokenStore (Tink)
         │   │   ├── location/       GeofenceManager, GeofenceBroadcastReceiver, BootReceiver,
         │   │   │                   ExitConfirmationWorker, LocationRequestWorker,
-        │   │   │                   EventUploadWorker, HeartbeatWorker
+        │   │   │                   EventUploadWorker, HeartbeatWorker, GeofenceSyncWorker,
+        │   │   │                   GeoMath (Haversine y clasificación, ETS §1.4.5)
+        │   │   ├── realtime/       RealtimeClient (WebSocket de OkHttp, solo modo Tutor)
         │   │   ├── notifications/  SafeRouteMessagingService, NotificationChannels,
         │   │   │                   NotificationRenderer
         │   │   ├── permissions/    PermissionChecker, OemBatteryGuide
@@ -653,7 +669,13 @@ flowchart TD
     C -- "Soy tutor" --> D
     C -- "Soy menor" --> E
     D -- "No" --> F["Inicio de sesión / registro"]
-    D -- "Sí" --> G["Navegación Tutor<br/>Inicio · Destinos · Historial · Ajustes"]
+    D -- "Sí" --> CS{"¿Consentimiento de la versión<br/>vigente del aviso?"}
+    CS -- "No" --> CN["Nuevo aviso de privacidad"]
+    CS -- "Sí" --> GS{"¿Pertenece a más de un grupo<br/>y no hay grupo elegido?"}
+    CN --> GS
+    GS -- "Sí" --> GP["Selector de grupo familiar"]
+    GS -- "No" --> G["Navegación Tutor<br/>Inicio · Destinos · Historial · Ajustes"]
+    GP --> G
     E -- "No" --> H["Vinculación: escaneo de QR o código"]
     E -- "Sí" --> I{"¿Permisos completos?"}
     H --> I
@@ -672,6 +694,8 @@ flowchart TD
 | Editor de destino | Mapa MapLibre, búsqueda de dirección (Photon vía API), control del radio con vista previa del círculo, menores, horario, tolerancia | RF-020 – RF-024 |
 | Historial | Lista con filtros; detalle con mapa mientras la ubicación siga disponible; vista de ubicaciones puntuales de los últimos 30 días | RF-052, RF-046 |
 | Grupo familiar | Tutores, invitaciones, menores, generación del QR de vinculación | RF-010 – RF-019 |
+| Selector de grupo familiar | Lista de los grupos del tutor; se muestra al arrancar si pertenece a varios y no hay uno elegido, y desde la barra superior en cualquier momento. El grupo elegido se recuerda en el dispositivo. | RF-013 |
+| Nuevo aviso de privacidad | Resumen de cambios, enlace al aviso completo y aceptación; bloquea el resto de la app hasta aceptar | RF-061 |
 | Ajustes | Preferencias de notificación, alertas prioritarias, privacidad, exportación, licencias de código abierto, eliminar cuenta | RF-053, RF-054, RF-060 – RF-063, RNF-LIC-04 |
 
 ### 5.5 Modo Menor: geocercas y ubicación
@@ -749,6 +773,7 @@ erDiagram
     family_group ||--o{ child : "agrupa"
     family_group ||--o{ destination : "define"
     guardian ||--o{ external_login : "se autentica con"
+    guardian ||--o{ account_token : "recibe por correo"
     guardian ||--o{ guardian_push_token : "registra"
     guardian ||--o{ consent : "otorga"
     privacy_notice ||--o{ consent : "versión aceptada"
@@ -762,6 +787,7 @@ erDiagram
     child ||--o{ watch_session : "vigilado en"
     watch_session ||--o{ safety_event : "produce"
     cat_event_type ||--o{ safety_event : "clasifica"
+    cat_event_type ||--o{ safety_event_daily_stat : "agrega"
     device ||--o{ device_event : "reporta"
     device ||--o{ location_sample : "captura"
     location_request ||--o| location_sample : "responde"
@@ -790,6 +816,8 @@ Los campos de control (`created_at`, `updated_at`, `is_active`) están en todas 
 | `deletion_requested_at` | `timestamptz` | Sí | Previo al borrado físico |
 
 **`external_login`** — `external_login_id`, `guardian_id` (FK), `provider` (`varchar(50)`, `ck_external_login_provider`: `google`), `subject` (`varchar(500)`). Único `(provider, subject)`.
+
+**`account_token`** — `account_token_id`, `guardian_id` (FK), `purpose` (`ck_account_token_purpose`: `email_verification`, `password_reset`), `token_hash` (único), `expires_at` (24 h o 60 min según el propósito), `used_at`. Tokens de un solo uso enviados por correo; solo se guarda su hash.
 
 **`refresh_token`** — `refresh_token_id`, `principal_type` (`guardian` | `device`), `principal_id`, `token_hash` (único), `family_id`, `expires_at` (nulo para dispositivo), `revoked_at`, `replaced_by_token_id`.
 
@@ -899,7 +927,7 @@ Restricción `uq_watch_session_schedule_child_date` sobre `(destination_schedule
 | `payload` | `jsonb` | Sí | Datos específicos del tipo |
 | `processing_status` | `varchar(50)` | No | `pending`, `processed`, `ignored` |
 
-**`location_sample`** (retención 30 días, particionada por mes) — `location_sample_id`, `device_id` (FK), `child_id` (FK, para el historial aunque cambie el dispositivo), `location_request_id` (nulo), `source` (`on_demand`, `verification`, `event`, `heartbeat`), `captured_at`, `latitude`, `longitude`, `accuracy_meters`, `is_mock`. Clave primaria `(location_sample_id, captured_at)` por el particionado. Índices `ix_location_sample_child_id_captured_at` e `ix_location_sample_device_id_captured_at`. DDL completo en la [ETS §4.2](ETS-SafeRoute.md#42-ddl-flyway).
+**`location_sample`** (retención 30 días, particionada por mes) — `location_sample_id`, `device_id` (FK), `child_id` (FK, para el historial aunque cambie el dispositivo), `location_request_id` (nulo), `source` (`on_demand`, `verification`, `event`; el latido no transporta ubicación), `captured_at`, `latitude`, `longitude`, `accuracy_meters`, `is_mock`. Clave primaria `(location_sample_id, captured_at)` por el particionado. Índices `ix_location_sample_child_id_captured_at` e `ix_location_sample_device_id_captured_at`. DDL completo en la [ETS §4.2](ETS-SafeRoute.md#42-ddl-flyway).
 
 **`location_request`** — `location_request_id`, `child_id` (FK), `requested_by_guardian_id` (FK, nulo si lo pide el sistema), `reason` (`on_demand`, `verification`, `arrival_deadline`, `arrival_confirmation`), `watch_session_id` (FK, nulo), `status` (`pending`, `fulfilled`, `timed_out`), `responded_at`.
 
@@ -916,7 +944,7 @@ Restricción `uq_watch_session_schedule_child_date` sobre `(destination_schedule
 | `destination_id` | `uuid` | Sí | FK |
 | `location_sample_id` | `uuid` | Sí | Muestra asociada, sin FK (la muestra se purga a los 30 días) |
 | `occurred_at` | `timestamptz` | No | Hora real del hecho |
-| `latitude`, `longitude` | `numeric(9,6)` | Sí | Se anulan a los 30 días |
+| `latitude`, `longitude` | `numeric(9,6)` | Sí | El evento completo se elimina a los 30 días (§4.12) |
 | `accuracy_meters` | `numeric(7,1)` | Sí | |
 | `is_location_unverified` | `boolean` | No | Ubicación simulada detectada |
 | `detected_by` | `varchar(50)` | Sí | `geofence_dwell`, `geofence_exit`, `verification`, `arrival_deadline`, `device_report`, `on_demand` |
@@ -924,6 +952,8 @@ Restricción `uq_watch_session_schedule_child_date` sobre `(destination_schedule
 | `dedup_key` | `varchar(500)` | No | Único; p. ej. `ARRIVAL:{watch_session_id}` |
 
 Índice `ix_safety_event_child_id_occurred_at` (`occurred_at DESC`) para el historial.
+
+**`safety_event_daily_stat`** — `safety_event_daily_stat_id`, `stat_date`, `event_type_id` (FK), `event_count`. Único `(stat_date, event_type_id)`. Agregado anónimo que conserva los conteos por día y tipo cuando los eventos se purgan a los 30 días; no contiene menor, grupo ni coordenadas.
 
 #### Notificaciones
 
@@ -951,11 +981,11 @@ Para 50 000 familias (RNF-ESC-01), 1,5 menores por familia y 2 sesiones diarias 
 
 | Tabla | Filas por día | Filas retenidas | Nota |
 |---|---|---|---|
-| `watch_session` | 150 000 | ~55 M/año | Sin coordenadas; archivable |
+| `watch_session` | 150 000 | ~4,5 M | Retención 30 días |
 | `device_event` | ~1 M | ~30 M | Retención 30 días |
 | `location_sample` | ~2,3 M | ~70 M | Incluye verificación cada 20 min |
-| `safety_event` | ~450 000 | Indefinido | Coordenadas anuladas a 30 días |
-| `notification` | ~700 000 | 90 días | |
+| `safety_event` | ~450 000 | ~13,5 M | Retención 30 días; después, solo `safety_event_daily_stat` |
+| `notification` | ~700 000 | ~21 M | Se elimina con su evento (30 días) |
 | `scheduled_tasks` | ~3 M ejecuciones | Decenas de miles vivas | Las tareas ejecutadas se eliminan |
 
 `location_sample` y `device_event` se definen como **tablas particionadas por mes** (particionado declarativo nativo de PostgreSQL) desde la primera migración; la purga se hace con `DROP` de la partición vencida.
@@ -1084,7 +1114,7 @@ Respuesta `201 Created` con el destino, `configVersion` y `syncStatus` por menor
 |---|---|---|---|
 | `GET` | `/children/{childId}/events` | Historial; filtros `type`, `destinationId`, `from`, `to` | RF-052 |
 | `GET` | `/children/{childId}/watch-sessions?date=` | Sesiones del día | |
-| `POST` | `/children/{childId}/location-requests` | Solicita ubicación; `202` con `locationRequestId` | RF-050, RF-051 |
+| `POST` | `/children/{childId}/location-requests` | Solicita ubicación; `202` con `locationRequestId`. Programa `verification-timeout` a 30 s, que marca la solicitud `timed_out` si no hay respuesta | RF-050, RF-051 |
 | `GET` | `/location-requests/{locationRequestId}` | Estado y resultado; con WebSocket conectado llega como `location:ping`, sin consultar | RF-050 |
 | `GET` | `/locations/history/{childId}` | Ubicaciones puntuales de eventos y consultas de los últimos 30 días; nunca lecturas de verificación ni trayectos | RF-046 |
 
@@ -1172,6 +1202,7 @@ Especificación completa en la [ETS §3.5](ETS-SafeRoute.md#35-protocolo-websock
 | `GET` | `/actuator/health/readiness` | Dependencias disponibles |
 | `GET` | `/actuator/prometheus` | Métricas (red interna únicamente) |
 | `GET` | `/api/v1/version` | Versión, commit y ambiente |
+| `POST` | `/api/v1/crash-reports` | Reportes de fallos de ACRA, sin datos personales; autenticación opcional, límite de 10 por dispositivo e IP por hora ([ETS §3.6](ETS-SafeRoute.md#36-post-apiv1crash-reports--reportes-de-fallos)) |
 
 ---
 
@@ -1948,7 +1979,8 @@ Reglas:
 | F-09 Ubicación bajo demanda | §7.7, §9.4 |
 | F-10 Historial | §6.3, §7.7 |
 | F-11 Preferencias | §10.2, §10.4 |
-| F-12 Privacidad | §4.12, §7.9, ADR-010 |
+| F-12 Privacidad | §4.7 (`data-erasure`, `data-export`), §4.12, §7.9, ADR-010 |
+| F-13 Estado en tiempo real | §4.13, §5.2 (`RealtimeClient`) |
 | RF-044 Verificación periódica | §9 |
 | RF-045 Estado en tiempo real | §4.13, §7.10, ETS §3.5 |
 | RF-046 Historial de ubicaciones puntuales | §7.7, ETS §3.4 |

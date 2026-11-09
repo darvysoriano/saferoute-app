@@ -20,6 +20,8 @@ Registro de los prompts usados con asistentes de IA para generar y modificar el 
 | 5 | 2026-10-20 | Creación de este historial de prompts | `docs/ai/prompts-history.md` |
 | 6 | 2026-10-20 | Creación del registro de logs de generación | `docs/ai/generation-logs.md` |
 | 7 | 2026-10-22 | Especificación técnica (SRS, arquitectura, contratos, modelo de datos, QA) y validación contra PRD/SDD | `docs/sdd/ETS-SafeRoute.md`, `docs/sdd/SDD-SafeRoute.md`, `docs/prd/PRD-SafeRoute.md` |
+| 8 | 2026-11-06 | Matriz de trazabilidad de requerimientos funcionales | `docs/analysis/TRAZABILIDAD.md` |
+| 9 | 2026-11-09 | Corrección de los hallazgos de la matriz de trazabilidad | `docs/sdd/ETS-SafeRoute.md`, `docs/sdd/SDD-SafeRoute.md`, `docs/prd/PRD-SafeRoute.md`, `docs/analysis/TRAZABILIDAD.md` |
 
 ---
 
@@ -125,4 +127,44 @@ Genera un documento técnico formal, estructurado en Markdown profesional, que c
 
 
     Valida los doucmentos ya documentados que son el PRD-SafeRoute.md y SDD-SafeRoute.md que todo la documentación este relacionada con lo ya documentado y validado.
+```
+
+## 8. Matriz de trazabilidad
+
+- **Fecha:** 2026-11-06
+- **Descripción:** Lectura completa del PRD v0.3, el SDD v0.3 y la ETS v1.0, y generación de la matriz de trazabilidad de los 51 RF hacia casos de uso, entidades, endpoints, componentes Android y pruebas, con resumen de cobertura y 12 hallazgos. Sin código.
+- **Archivos afectados:** `docs/analysis/TRAZABILIDAD.md`
+
+```text
+Lee completamente:
+
+docs/prd/PRD-SafeRoute.md
+docs/sdd/SDD-SafeRoute.md
+docs/sdd/ETS-SafeRoute.md
+
+Genera:
+
+docs/analysis/TRAZABILIDAD.md
+
+Incluye:
+
+- RF → Caso de Uso
+- RF → Entidades
+- RF → Endpoints
+- RF → Android
+- RF → Tests
+
+No generar código.
+
+ Entraga este documento de forma profesional
+```
+
+## 9. Corrección de los hallazgos de la matriz de trazabilidad
+
+- **Fecha:** 2026-11-09
+- **Descripción:** Aplicación de los 12 hallazgos (H-01 a H-12), empezando por los casos de prueba de los RF Must: 54 casos nuevos en la ETS, casos de uso CU-10 a CU-19 en el PRD, tabla `account_token`, tareas `data-erasure` y `data-export`, retención de respaldos, retención de eventos a 30 días con agregado anónimo, endpoint de reportes de fallos y componentes y pantallas faltantes en el SDD. Matriz actualizada a v1.1 con los hallazgos cerrados.
+- **Archivos afectados:** `docs/sdd/ETS-SafeRoute.md`, `docs/sdd/SDD-SafeRoute.md`, `docs/prd/PRD-SafeRoute.md`, `docs/analysis/TRAZABILIDAD.md`
+
+```text
+aplica las as correcciones de los hallazgos, empezando por los casos de prueba que faltan para los requerimientos Must.
 ```
